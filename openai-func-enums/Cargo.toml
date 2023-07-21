@@ -9,7 +9,6 @@ license = "MIT"
 repository = "https://github.com/frankfralick/openai-func-enums"
 homepage = "https://github.com/frankfralick/openai-func-enums"
 readme = "README.md"
-keywords = ["openai", "async-openai", "enums", "function-calls"]
 categories = ["api-bindings"]
 
 
