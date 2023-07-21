@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "openai-func-enums",
+    "openai-func-enums-macros"
+]
+

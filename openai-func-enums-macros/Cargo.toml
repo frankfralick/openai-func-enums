@@ -1,0 +1,18 @@
+[package]
+name = "openai-func-enums-macros"
+version = "0.1.0"
+authors = ["Frank Fralick <frankfralick@gmail.com>"]
+description = "A companion crate for async-openai to ease the composition of function calls by leveraging Rust's type system and enums."
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/frankfralick/openai-func-enums"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.66"
+quote = "1.0.31"
+syn = { version = "2.0.23", features = ["derive", "parsing"]}
+tiktoken-rs = "0.4.2"

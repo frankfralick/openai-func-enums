@@ -1,0 +1,8 @@
+/tls
+/target
+/vector_storage
+/Cargo.lock
+*.env
+*.vscode
+# *.git
+*.json
