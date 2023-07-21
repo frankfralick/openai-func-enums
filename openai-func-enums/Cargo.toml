@@ -2,10 +2,12 @@
 name = "openai-func-enums"
 version = "0.1.0"
 authors = ["Frank Fralick <frankfralick@gmail.com>"]
+keywords = ["openai", "async-openai", "ai"]
 description = "A companion crate for async-openai to ease the composition of function calls by leveraging Rust's type system and enums."
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/frankfralick/openai-func-enums"
+homepage = "https://github.com/frankfralick/openai-func-enums"
 readme = "README.md"
 keywords = ["openai", "async-openai", "enums", "function-calls"]
 categories = ["api-bindings"]

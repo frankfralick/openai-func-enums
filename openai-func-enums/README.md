@@ -8,7 +8,7 @@ The motivation for this was the need to leverage OpenAI function calls for logic
 
 ## Features
 
-- **Enums are the greatest:** openai-func-enums asks you to define an enum to represent possible "functions" to be passed to the OpenAI API, with each variant representing a "function, with the fields on these variants indicating the required arguments. Each field is an enum, with the variants of these fields determining the allowed choices that can be passed to the OpenAI API.
+- **Enums are the greatest:** openai-func-enums asks you to define an enum to represent possible "functions" to be passed to the OpenAI API, with each variant representing a function, with the fields on these variants indicating the required arguments. Each field is an enum, with the variants of these fields determining the allowed choices that can be passed to the OpenAI API.
 
 - **Token Tallying:** The library keeps a tally of the token count associated with each "function" defined through the enums. This would allow for precise control over the token limit if there was better documentation, but it should work in most cases. There is a limit on function descriptions that I can but haven't determined a value for. At some point I will put in guards for description length (the function description seems to make a big difference on performance where nuance exists).
 
