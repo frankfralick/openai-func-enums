@@ -1,6 +1,7 @@
-use proc_macro::TokenStream;
+use proc_macro::{TokenStream, TokenTree};
+// use proc_macro2::Group;
 use quote::{format_ident, quote, ToTokens};
-use syn::{parse_macro_input, Data, DeriveInput, Ident, Lit};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Expr, Ident, Lit, Meta};
 use tiktoken_rs::cl100k_base;
 
 /// The `arg_description` attribute is a procedural macro used to provide additional description for an enum.
@@ -300,6 +301,80 @@ pub fn generate_enum_info(input: TokenStream) -> TokenStream {
     output.into()
 }
 
+#[proc_macro]
+// pub fn generate_value_arg_info(input: TokenStream, arg_name: TokenStream) -> TokenStream {
+pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
+    // println!("Got here 100");
+    // let value_ident = parse_macro_input!(input as Punctuated<LitStr, Token![,]>);
+    // for arg in value_ident.into() {
+    //     if arg.is_ident() {
+    //         println!("this is an ident: {:#?}", arg);
+    //     }
+    // }
+
+    // for arg in input.into() {
+    //     let test = arg;
+    // }
+
+    let mut type_and_name_values = Vec::new();
+
+    let tokens = input.into_iter().collect::<Vec<TokenTree>>();
+    // println!("Got here 200");
+    for token in tokens {
+        match &token {
+            TokenTree::Ident(ident) => {
+                type_and_name_values.push(ident.to_string());
+            }
+            _ => {}
+        }
+    }
+    // let arg_name_ident = parse_macro_input!(arg_name as Ident);
+    // println!("value_ident: {:#?}", value_ident);
+    // let value_ident_tokens = calculate_token_count(value_ident.)
+    // let name = value_ident.to_string();
+    // let name = String::from("test");
+    // let name_tokens = calculate_token_count(name.as_str());
+
+    if type_and_name_values.len() == 2 {
+        let name = type_and_name_values[1].clone();
+        let name_tokens = calculate_token_count(name.as_str());
+        let type_name = type_and_name_values[0].clone();
+        let type_name_tokens = calculate_token_count(type_name.as_str());
+        let output = quote! {
+            {
+                use serde_json::Value;
+                let mut total_tokens = 0;
+                total_tokens += #name_tokens;
+                total_tokens += #type_name_tokens;
+                //
+                // let (arg_desc, arg_count) = <#enum_ident as EnumDescriptor>::arg_description_with_token_count();
+                // total_tokens += arg_count;
+                //
+                // let enum_name = <#enum_ident as EnumDescriptor>::name_with_token_count();
+                // total_tokens += enum_name.1;
+                // total_tokens += enum_name.1;
+                //
+                // let enum_variants = <#enum_ident as VariantDescriptors>::variant_names_with_token_counts();
+                // total_tokens += enum_variants.iter().map(|(_, token_count)| *token_count).sum::<usize>();
+                //
+                let json_enum = serde_json::json!({
+                    #name: {
+                        "type": #type_name,
+                    }
+                });
+
+                total_tokens += 11;
+
+                (json_enum, total_tokens)
+            }
+        };
+        return output.into();
+    }
+
+    // output.into()
+    let gen = quote! {};
+    return gen.into();
+}
 /// This procedural macro attribute is used to specify a description for an enum variant.
 ///
 /// The `func_description` attribute does not modify the input it is given.
@@ -493,6 +568,313 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
         }
         _ => panic!("FunctionCallResponse can only be derived for enums"),
     }
+}
+
+#[proc_macro_derive(SubcommandGPT)]
+pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
+    // Parse the input tokens into a syntax tree
+    let input = parse_macro_input!(input as DeriveInput);
+
+    // Get the name of the enum
+    let name = input.ident;
+
+    let data = match input.data {
+        Data::Enum(data) => data,
+        _ => panic!("SubcommandGPT can only be implemented for enums"),
+    };
+
+    let mut generated_structs = Vec::new();
+    let mut json_generator_functions = Vec::new();
+    let mut generated_clap_gpt_enum = Vec::new();
+    let mut generated_struct_names = Vec::new();
+    // let mut all_get_json_calls = Vec::new();
+
+    for variant in data.variants.iter() {
+        let variant_name = &variant.ident;
+        let struct_name = format_ident!("{}Response", variant_name);
+        generated_struct_names.push(struct_name.clone());
+        let mut variant_desc = String::new();
+        let mut variant_desc_tokens = 0_usize;
+
+        for variant_attrs in &variant.attrs {
+            let description = get_comment_from_attr(&variant_attrs);
+            if let Some(description) = description {
+                variant_desc = description;
+                variant_desc_tokens = calculate_token_count(variant_desc.as_str());
+            }
+        }
+
+        let fields: Vec<_> = variant
+            .fields
+            .iter()
+            .map(|f| {
+                // If the field has an identifier (i.e., it is a named field),
+                // use it. Otherwise, use the type as the name.
+                let field_name = if let Some(ident) = &f.ident {
+                    format_ident!("{}", ident)
+                } else {
+                    format_ident!("{}", to_snake_case(&f.ty.to_token_stream().to_string()))
+                };
+                let field_type = &f.ty;
+                quote! {
+                    pub #field_name: #field_type,
+                }
+            })
+            .collect();
+
+        let execute_command_parameters: Vec<_> = variant
+            .fields
+            .iter()
+            .map(|field| {
+                let field_name = &field.ident;
+                quote! { #field_name: self.#field_name.clone() }
+            })
+            .collect();
+
+        let number_type = "number";
+        let number_ident = format_ident!("{}", number_type);
+        let integer_type = "integer";
+        let integer_ident = format_ident!("{}", integer_type);
+        let string_type = "string";
+        let string_ident = format_ident!("{}", string_type);
+
+        let field_info: Vec<_> = variant
+            .fields
+            .iter()
+            .map(|f| {
+                let field_name = if let Some(ident) = &f.ident {
+                    format_ident!("{}", ident)
+                } else {
+                    format_ident!("{}", to_snake_case(&f.ty.to_token_stream().to_string()))
+                };
+                let field_type = &f.ty;
+                match field_type {
+                    syn::Type::Path(typepath) if typepath.qself.is_none() => {
+                        let type_ident = &typepath.path.segments.last().unwrap().ident;
+
+                        match type_ident.to_string().as_str() {
+                            "f32" | "f64" => {
+                                return quote! {
+                                    generate_value_arg_info!(#number_ident, #field_name)
+                                };
+                            }
+                            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16"
+                            | "i32" | "i64" | "i128" | "isize" => {
+                                return quote! {
+                                    generate_value_arg_info!(#integer_ident, #field_name)
+                                };
+                            }
+                            "String" | "&str" => {
+                                return quote! {
+                                    generate_value_arg_info!(#string_ident, #field_name)
+                                };
+                            }
+                            _ => {
+                                // Not a great way to determine if we've got a struct or an enum,
+                                // TODO: remove the panic out of the variant description related
+                                // macro so this doesn't blow up.
+                                // println!("Field {} is of type {}", field_name, type_ident);
+                                return quote! {
+                                    generate_enum_info!(#field_type)
+                                };
+                            }
+                        }
+                    }
+                    syn::Type::Tuple(_) => {
+                        println!("Field {} is of tuple type", field_name);
+                    }
+                    syn::Type::Array(_) => {
+                        println!("Field {} is of array type", field_name);
+                    }
+                    _ => {}
+                }
+                quote! {}
+            })
+            .collect();
+
+        json_generator_functions.push(quote! {
+            impl #struct_name {
+                pub fn name() -> String {
+                    stringify!(#struct_name).to_string()
+                }
+
+                pub fn to_function_call() -> ChatCompletionFunctionCall {
+                    let function_call_json = json!({
+                        "name": stringify!(#struct_name)
+                    });
+
+                    ChatCompletionFunctionCall::Object(function_call_json)
+                }
+
+                pub fn execute_command(&self) -> #name {
+                    #name::#variant_name {
+                        #(#execute_command_parameters),*
+                    }
+                }
+
+                pub fn get_function_json() -> (Value, usize) {
+                    let mut parameters = serde_json::Map::new();
+                    let mut total_tokens = 0;
+
+                    for (arg_json, arg_tokens) in vec![#(#field_info),*] {
+                        total_tokens += arg_tokens;
+                        parameters.insert(
+                            arg_json.as_object().unwrap().keys().next().unwrap().clone(),
+                            arg_json
+                                .as_object()
+                                .unwrap()
+                                .values()
+                                .next()
+                                .unwrap()
+                                .clone(),
+                        );
+                    }
+
+                    let function_json = json!({
+                        "name": stringify!(#struct_name),
+                        "description": #variant_desc,
+                        "parameters": {
+                            "type": "object",
+                            "properties": parameters,
+                            "required": parameters.keys().collect::<Vec<_>>()
+                        }
+                    });
+
+                    total_tokens += 12;
+                    total_tokens += #variant_desc_tokens;
+
+                    (function_json, total_tokens)
+                }
+            }
+        });
+
+        generated_structs.push(quote! {
+            #[derive(serde::Deserialize, Debug)]
+            // #[serde(rename_all = "PascalCase")]
+            pub struct #struct_name {
+                #(#fields)*
+            }
+        });
+    }
+
+    let all_function_calls = quote! {
+        pub fn all_function_jsons() -> (serde_json::Value, usize) {
+            let results = vec![#(#generated_struct_names::get_function_json(),)*];
+            let combined_json = serde_json::Value::Array(results.iter().map(|(json, _)| json.clone()).collect());
+            let total_tokens = results.iter().map(|(_, tokens)| tokens).sum();
+            (combined_json, total_tokens)
+        }
+    };
+
+    generated_clap_gpt_enum.push(quote! {
+        #[derive(Subcommand)]
+        pub enum CommandsGPT {
+            GPT { a: String },
+        }
+    });
+
+    let struct_names: Vec<String> = generated_struct_names
+        .iter()
+        .map(|name| format!("{}", name))
+        .collect();
+
+    let commands_gpt_impl = quote! {
+        #[derive(Debug)]
+        pub enum FunctionResponse {
+            #(
+                #generated_struct_names(#generated_struct_names),
+            )*
+        }
+
+        impl CommandsGPT {
+            #all_function_calls
+            pub fn parse_gpt_function_call(function_call: &FunctionCall) -> Result<FunctionResponse, Box<dyn std::error::Error>> {
+                match function_call.name.as_str() {
+                    #(
+                    #struct_names => {
+                        let arguments: #generated_struct_names = serde_json::from_str(&function_call.arguments)?;
+                        Ok(FunctionResponse::#generated_struct_names(arguments))
+                    },
+                    )*
+                    _ => Err(format!("Unknown function name: {}", function_call.name).into())
+                }
+            }
+            // pub fn parse_gpt_function_call(function_call: &FunctionCall) -> Result<FunctionResponse, Box<dyn std::error::Error>> {
+            //     match function_call.name.as_str() {
+            //         #(
+            //         #generated_struct_names::name().as_str() => {
+            //             let arguments: #generated_struct_names = serde_json::from_str(&function_call.arguments)?;
+            //             Ok(FunctionResponse::#generated_struct_names(arguments))
+            //         },
+            //         )*
+            //         _ => Err(format!("Unknown function name: {}", function_call.name).into())
+            //     }
+            // }
+        }
+
+
+    };
+
+    let gen = quote! {
+        #(#generated_structs)*
+
+        #(#json_generator_functions)*
+
+        #(#generated_clap_gpt_enum)*
+
+        #commands_gpt_impl
+    };
+
+    // println!("This is the generated struct:  ");
+    // println!("{:#?}", gen.to_string());
+
+    // println!("These are the generated structs:");
+    // for struct_def in &generated_structs {
+    //     println!("{:#?}", struct_def.to_string());
+    // }
+    //
+    // println!("These are the JSON generator functions:");
+    // for func_def in &json_generator_functions {
+    //     println!("{:#?}", func_def.to_string());
+    // }
+    //
+    // println!("These are the generated Clap GPT enums:");
+    // for enum_def in &generated_clap_gpt_enum {
+    //     println!("{:#?}", enum_def.to_string());
+    // }
+    //
+    // println!("This is the Commands GPT impl:");
+    // println!("{:#?}", commands_gpt_impl.to_string());
+
+    return gen.into();
+}
+
+fn get_comment_from_attr(attr: &Attribute) -> Option<String> {
+    if attr.path().is_ident("doc") {
+        if let Meta::NameValue(meta) = &attr.meta {
+            if meta.path.is_ident("doc") {
+                let value = meta.value.clone();
+                // println!("{:#?}", value);
+                match value {
+                    Expr::Lit(value) => {
+                        // println!("{:#?}", value);
+                        match value.lit {
+                            Lit::Str(value) => {
+                                return Some(value.value());
+                            }
+                            _ => {
+                                return None;
+                            }
+                        }
+                    }
+                    _ => {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Calculate the token count of a given text string using the Byte Pair Encoding (BPE) tokenizer.

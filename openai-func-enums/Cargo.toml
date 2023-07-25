@@ -14,6 +14,7 @@ categories = ["api-bindings"]
 
 [dependencies]
 async-openai = "0.12.1"
+async-trait = "0.1.72"
 openai-func-enums-macros = { path = "../openai-func-enums-macros", version = "0.1.0" }
 proc-macro2 = "1.0.66"
 quote = "1.0.31"
