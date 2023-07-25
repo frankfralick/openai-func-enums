@@ -20,30 +20,21 @@ First, define an enum to hold the possible functions, with each variant being a 
 #[derive(Debug, FunctionCallResponse)]
 pub enum FunctionDef {
     #[func_description(
-        description = "Get the current weather in the location closest to the one provided location",
-        tokens = 14
+        description = "Get the current weather in the location closest to the one provided location"
     )]
     GetCurrentWeather(Location, TemperatureUnits),
 }
 ```
 
-Each argument must implement the `FunctionArgument` trait, which provides a description and token count for the argument. For example, a `Location` argument might look like this:
+Each argument must derive EnumDescriptor and VariantDescriptor, and must have the attribute macro arg_description. For example, a `Location` argument might look like this:
 
 ```rust
 #[derive(Clone, Debug, Deserialize, EnumDescriptor, VariantDescriptors)]
+#[arg_description(description = "The only valid locations that can be passed.")]
 pub enum Location {
     Atlanta,
     Boston,
     // ...
-}
-
-impl FunctionArgument for Location {
-    fn argument_description_with_token_count() -> (Option<String>, usize) {
-        (
-            Some(String::from(" The only valid locations that can be passed")),
-            9,
-        )
-    }
 }
 ```
 
