@@ -13,6 +13,7 @@ pub trait EnumDescriptor {
     /// A tuple where the first element is a `String` representing the name of the enum,
     /// and the second element is a `usize` representing the count of tokens in the enum's name.
     fn name_with_token_count() -> (String, usize);
+    fn arg_description_with_token_count() -> (String, usize);
 }
 
 /// A trait to provide descriptors for the variants of an enumeration.

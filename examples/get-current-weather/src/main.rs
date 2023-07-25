@@ -6,8 +6,9 @@ use async_openai::{
     Client,
 };
 use openai_func_enums::{
-    func_description, generate_enum_info, get_function_chat_completion_args, parse_function_call,
-    EnumDescriptor, FunctionArgument, FunctionCallResponse, VariantDescriptors,
+    arg_description, func_description, generate_enum_info, get_function_chat_completion_args,
+    parse_function_call, EnumDescriptor, FunctionCallResponse,
+    VariantDescriptors,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -72,6 +73,7 @@ pub enum FunctionDef {
 }
 
 #[derive(Clone, Debug, Deserialize, EnumDescriptor, VariantDescriptors)]
+#[arg_description(description = "The only valid locations that can be passed.")]
 pub enum Location {
     Atlanta,
     Boston,
@@ -88,26 +90,9 @@ pub enum Location {
     Washington,
 }
 
-impl FunctionArgument for Location {
-    fn argument_description_with_token_count() -> (Option<String>, usize) {
-        (
-            Some(String::from("The only valid locations that can be passed")),
-            6,
-        )
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, EnumDescriptor, VariantDescriptors)]
+#[arg_description(description = "A temperatuer unit chosen fron the enum.")]
 pub enum TemperatureUnits {
     Celcius,
     Fahrenheit,
-}
-
-impl FunctionArgument for TemperatureUnits {
-    fn argument_description_with_token_count() -> (Option<String>, usize) {
-        (
-            Some(String::from("A temperature unit chosen from the enum")),
-            7,
-        )
-    }
 }

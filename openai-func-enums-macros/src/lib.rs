@@ -3,6 +3,31 @@ use quote::{format_ident, quote, ToTokens};
 use syn::{parse_macro_input, Data, DeriveInput, Ident, Lit};
 use tiktoken_rs::cl100k_base;
 
+/// The `arg_description` attribute is a procedural macro used to provide additional description for an enum.
+///
+/// This attribute does not modify the code it annotates but instead attaches metadata in the form of a description.
+/// This can be helpful for better code readability and understanding the purpose of different enums.
+///
+/// # Usage
+///
+/// ```rust
+/// #[arg_description(description = "This is a sample enum.", tokens = 5)]
+/// #[derive(EnumDescriptor)]
+/// pub enum SampleEnum {
+///     Variant1,
+///     Variant2,
+/// }
+/// ```
+///
+/// Note: The actual usage of the description and tokens provided through this attribute happens
+/// in the `EnumDescriptor` derive macro and is retrieved in the `enum_descriptor_derive` function.
+///
+/// The `arg_description` attribute takes one argument, `description`, which is a string literal.
+#[proc_macro_attribute]
+pub fn arg_description(_args: TokenStream, input: TokenStream) -> TokenStream {
+    input
+}
+
 /// A derive procedural macro for the `EnumDescriptor` trait.
 ///
 /// The `EnumDescriptor` trait should have a function `name_with_token_count`
@@ -38,19 +63,53 @@ use tiktoken_rs::cl100k_base;
 ///
 /// The actual token count is computed during compile time using the
 /// `calculate_token_count` function.
-#[proc_macro_derive(EnumDescriptor)]
+#[proc_macro_derive(EnumDescriptor, attributes(arg_description))]
 pub fn enum_descriptor_derive(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+    let DeriveInput { ident, attrs, .. } = parse_macro_input!(input as DeriveInput);
 
-    let name = &input.ident;
-    let name_str = format!("{}", name);
+    let name_str = format!("{}", ident);
+    let name_token_count = calculate_token_count(&name_str);
 
-    let token_count = calculate_token_count(&name_str);
+    let mut description = String::new();
+    let mut desc_tokens = 0_usize;
+
+    for attr in &attrs {
+        if attr.path().is_ident("arg_description") {
+            let _result = attr.parse_nested_meta(|meta| {
+                let content = meta.input;
+
+                while !content.is_empty() {
+                    if meta.path.is_ident("description") {
+                        let value = meta.value()?;
+                        if let Ok(Lit::Str(value)) = value.parse() {
+                            description = value.value();
+                        }
+                    } else if meta.path.is_ident("tokens") {
+                        let value = meta.value()?;
+                        if let Ok(Lit::Int(value)) = value.parse() {
+                            desc_tokens = value.base10_parse::<usize>()?;
+                            return Ok(());
+                        }
+                    }
+                    return Ok(());
+                }
+
+                Err(meta.error("unrecognized my_attribute"))
+            });
+
+            if _result.is_err() {
+                println!("Error parsing attribute:   {:#?}", _result);
+            }
+        }
+    }
 
     let expanded = quote! {
-        impl EnumDescriptor for #name {
+        impl EnumDescriptor for #ident {
             fn name_with_token_count() -> (String, usize) {
-                (String::from(#name_str), #token_count)
+                (String::from(#name_str), #name_token_count)
+            }
+            fn arg_description_with_token_count() -> (String, usize) {
+                (String::from(#description), #desc_tokens)
             }
         }
     };
@@ -221,7 +280,8 @@ pub fn generate_enum_info(input: TokenStream) -> TokenStream {
             use serde_json::Value;
             let mut total_tokens = 0;
 
-            let (arg_desc, arg_count) = <#enum_ident as ::openai_func_enums::FunctionArgument>::argument_description_with_token_count();
+            // let (arg_desc, arg_count) = <#enum_ident as ::openai_func_enums::FunctionArgument>::argument_description_with_token_count();
+            let (arg_desc, arg_count) = <#enum_ident as EnumDescriptor>::arg_description_with_token_count();
             total_tokens += arg_count;
 
             let enum_name = <#enum_ident as EnumDescriptor>::name_with_token_count();
