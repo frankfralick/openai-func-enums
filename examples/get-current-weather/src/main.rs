@@ -7,8 +7,7 @@ use async_openai::{
 };
 use openai_func_enums::{
     arg_description, func_description, generate_enum_info, get_function_chat_completion_args,
-    parse_function_call, EnumDescriptor, FunctionCallResponse,
-    VariantDescriptors,
+    parse_function_call, EnumDescriptor, FunctionCallResponse, VariantDescriptors,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -66,8 +65,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 #[derive(Debug, FunctionCallResponse)]
 pub enum FunctionDef {
     #[func_description(
-        description = "Get the current weather in the location closest to the one provided location",
-        tokens = 8
+        description = "Get the current weather in the location closest to the one provided location"
     )]
     GetCurrentWeather(Location, TemperatureUnits),
 }

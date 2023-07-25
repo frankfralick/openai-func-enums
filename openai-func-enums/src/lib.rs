@@ -36,18 +36,6 @@ pub trait VariantDescriptors {
     fn variant_name_with_token_count(&self) -> (String, usize);
 }
 
-/// A trait to provide a description for a function argument.
-/// This includes an optional description and the count of tokens in the description.
-pub trait FunctionArgument {
-    /// Returns the description of the function argument and the count of tokens in the description.
-    ///
-    /// # Returns
-    ///
-    /// A tuple where the first element is an `Option<String>` representing the description of the function argument,
-    /// and the second element is a `usize` representing the count of tokens in the description.
-    fn argument_description_with_token_count() -> (Option<String>, usize);
-}
-
 /// A trait for responses from function calls.
 /// This includes a method to generate a JSON representation of the function.
 pub trait FunctionCallResponse {

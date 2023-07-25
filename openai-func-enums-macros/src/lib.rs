@@ -226,14 +226,6 @@ pub fn variant_descriptors_derive(input: TokenStream) -> TokenStream {
 ///
 /// # Usage
 ///
-/// ```rust
-/// #[generate_enum_info]
-/// enum MyEnum {
-///     Variant1,
-///     Variant2,
-/// }
-/// ```
-///
 /// The generated code will look like this:
 ///
 /// ```rust
@@ -244,6 +236,10 @@ pub fn variant_descriptors_derive(input: TokenStream) -> TokenStream {
 ///     let (arg_desc, arg_count) = <MyEnum as ::openai_func_enums::FunctionArgument>::argument_description_with_token_count();
 ///     total_tokens += arg_count;
 ///
+///     // When this is consumed by the function that creates the overall function,
+///     // we are going to be requiring all the arguments, which means we will repeat
+///     // their names in the "required" part of openai's function schema. So we will
+///     // count the tokens associated with this enum name twice here.
 ///     let enum_name = <MyEnum as EnumDescriptor>::name_with_token_count();
 ///     total_tokens += enum_name.1;
 ///     total_tokens += enum_name.1;
@@ -265,16 +261,12 @@ pub fn variant_descriptors_derive(input: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// Note: It is assumed that the enum implements the `EnumDescriptor`, `VariantDescriptors`, and `FunctionArgument` traits.
+/// Note: It is assumed that the enum implements the `EnumDescriptor` and `VariantDescriptors` traits.
 /// The actual token count is computed during compile time using these traits' methods.
 #[proc_macro]
 pub fn generate_enum_info(input: TokenStream) -> TokenStream {
     let enum_ident = parse_macro_input!(input as Ident);
 
-    // When this is consumed by the function that creates the overall function,
-    // we are going to be requiring all the arguments, which means we will repeat
-    // their names in the "required" part of openai's function schema. So we will
-    // count the tokens associated with this enum name twice here.
     let output = quote! {
         {
             use serde_json::Value;
@@ -316,10 +308,11 @@ pub fn generate_enum_info(input: TokenStream) -> TokenStream {
 /// # Usage
 ///
 /// ```rust
-/// #[func_description]
 /// enum MyEnum {
-///     Variant1,
-///     Variant2,
+///     #[func_description(description="This function does a thing.")]
+///     DoAThing,
+///     #[func_description(description="This function does another thing.")]
+///     DoAnotherThing,
 /// }
 /// ```
 ///
@@ -390,12 +383,7 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
                                     let value = meta.value()?;
                                     if let Ok(Lit::Str(value)) = value.parse() {
                                         description = value.value();
-                                    }
-                                } else if meta.path.is_ident("tokens") {
-                                    let value = meta.value()?;
-                                    if let Ok(Lit::Int(value)) = value.parse() {
-                                        desc_tokens = value.base10_parse::<usize>()?;
-                                        return Ok(());
+                                        desc_tokens = calculate_token_count(description.as_str());
                                     }
                                 }
 
