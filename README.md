@@ -145,7 +145,7 @@ pub enum Commands {
 
 The library provides a trait called "RunCommand", which makes you implement a "run" function. This function returns a result of Option<String>, and this is only for cases where you have more than one step.  In this example I'm showing how you can have value type arguments, as well as enums. If you want to define an enum that will serve as an argument to function calls, they need to derive clap's ```ValueEnum```, as well as the other ```EnumDescriptor``` and ```VariantDescriptors``` provided by this library. 
 
-![Clap Example](./assets/clap_example.png)
+![Clap Example](./openai-func-enums/assets/clap_example.png)
 
 
 ```rust
