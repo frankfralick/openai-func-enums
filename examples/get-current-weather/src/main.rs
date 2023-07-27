@@ -26,7 +26,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .role(Role::User)
             .content("What's the weather like in Swainsboro, Georgia?")
             .build()?])
-        .functions(vec![function_args.0])
+        // .functions(vec![function_args.0])
+        .functions(function_args.0)
         .function_call(GetCurrentWeatherResponse::to_function_call())
         .build()?;
 
@@ -89,7 +90,7 @@ pub enum Location {
 }
 
 #[derive(Clone, Debug, Deserialize, EnumDescriptor, VariantDescriptors)]
-#[arg_description(description = "A temperatuer unit chosen fron the enum.")]
+#[arg_description(description = "A temperature unit chosen from the enum.")]
 pub enum TemperatureUnits {
     Celcius,
     Fahrenheit,

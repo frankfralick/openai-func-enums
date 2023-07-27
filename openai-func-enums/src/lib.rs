@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::fmt::{self, Debug};
 
 use async_openai::error::OpenAIError;
 use async_openai::types::{ChatCompletionFunctions, ChatCompletionFunctionsArgs};
@@ -44,16 +45,38 @@ pub trait VariantDescriptors {
     fn variant_name_with_token_count(&self) -> (String, usize);
 }
 
-#[async_trait]
-pub trait RunCommand {
-    type Error: Error + Send + Sync + 'static;
-    async fn run(self) -> Result<(), Self::Error>;
+#[derive(Debug)]
+pub struct CommandError {
+    details: String,
+}
+
+impl CommandError {
+    pub fn new(msg: &str) -> CommandError {
+        CommandError {
+            details: msg.to_string(),
+        }
+    }
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl Error for CommandError {}
+
+impl From<OpenAIError> for CommandError {
+    fn from(error: OpenAIError) -> Self {
+        CommandError::new(&format!("OpenAI Error: {}", error.to_string()))
+    }
 }
 
 #[async_trait]
-pub trait RunCli {
-    type Output;
-    async fn run(self) -> Self::Output;
+pub trait RunCommand: Sync + Send {
+    async fn run(
+        &self,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>>;
 }
 
 /// A trait for responses from function calls.
@@ -111,44 +134,10 @@ macro_rules! parse_function_call {
 /// * A `Result` which is `Ok` if the function chat completion arguments were successfully obtained, and `Err` otherwise.
 ///   The `Ok` variant contains a tuple where the first element is a `ChatCompletionFunctions` representing the chat completion arguments for the function,
 ///   and the second element is a `usize` representing the total count of tokens in the function's JSON representation.
-// pub fn get_function_chat_completion_args(
-//     func: impl Fn() -> (Value, usize),
-// ) -> Result<(ChatCompletionFunctions, usize), OpenAIError> {
-//     let (func_json, total_tokens) = func();
-//     println!("this is func_json");
-//     println!("{:#?}", func_json);
-//
-//     let parameters = match func_json.get("parameters") {
-//         Some(parameters) => Some(parameters.clone()),
-//         None => None,
-//     };
-//
-//     let description = func_json
-//         .get("description")
-//         .and_then(|v| v.as_str())
-//         .map(|s| s.to_string());
-//
-//     let name = func_json.get("name").unwrap().as_str().unwrap().to_string();
-//     let chat_completion_args = match description {
-//         Some(desc) => ChatCompletionFunctionsArgs::default()
-//             .name(name)
-//             .description(desc)
-//             .parameters(parameters)
-//             .build()?,
-//         None => ChatCompletionFunctionsArgs::default()
-//             .name(name)
-//             .parameters(parameters)
-//             .build()?,
-//     };
-//     Ok((chat_completion_args, total_tokens))
-// }
-
 pub fn get_function_chat_completion_args(
     func: impl Fn() -> (Value, usize),
 ) -> Result<(Vec<ChatCompletionFunctions>, usize), OpenAIError> {
     let (func_json, total_tokens) = func();
-    // println!("this is func_json");
-    // println!("{:#?}", func_json);
 
     let mut chat_completion_functions_vec = Vec::new();
 

@@ -570,12 +570,45 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
     }
 }
 
+/// The `SubcommandGPT` procedural macro is used to derive a structure 
+/// which encapsulates various chat completion commands.
+/// 
+/// This macro should be applied to an enum. It generates various supporting
+/// structures and methods, including structures representing the command arguments,
+/// methods for converting between the argument structures and the original enum,
+/// JSON conversion methods, and an implementation of the original enum that provides 
+/// methods for executing the commands and dealing with the responses.
+///
+/// Each variant of the original enum will be converted into a corresponding structure,
+/// and each field in the variant will become a field in the generated structure.
+/// The generated structures will derive `serde::Deserialize` and `Debug` automatically.
+/// 
+/// This macro also generates methods for calculating the token count of a string and 
+/// for executing commands based on function calls received from the chat API.
+/// 
+/// The types of fields in the enum variants determine how the corresponding fields in the 
+/// generated structures are treated. For example, fields of type `String` or `&str` are 
+/// converted to JSON value arguments with type `"string"`, while fields of type `u8`, `u16`, 
+/// `u32`, `u64`, `usize`, `i8`, `i16`, `i32`, `i64`, `isize`, `f32` or `f64` are converted 
+/// to JSON value arguments with type `"integer"` or `"number"` respectively. 
+/// For fields with a tuple type, currently this macro simply prints that the field is of a tuple type.
+/// For fields with an array type, they are converted to JSON value arguments with type `"array"`.
+///
+/// When running the chat command, a custom system message can be optionally provided.
+/// If provided, this message will be used as the system message in the chat request. 
+/// If not provided, a default system message will be used.
+///
+/// If the total token count of the request exceeds a specified limit, an error will be returned.
+///
+/// The `derive_subcommand_gpt` function consumes a `TokenStream` representing the enum
+/// to which the macro is applied and produces a `TokenStream` representing the generated code.
+///
+/// # Panics
+/// This macro will panic (only at compile time) if it is applied to a non-enum item.
 #[proc_macro_derive(SubcommandGPT)]
 pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
-    // Parse the input tokens into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
 
-    // Get the name of the enum
     let name = input.ident;
 
     let data = match input.data {
@@ -587,7 +620,6 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
     let mut json_generator_functions = Vec::new();
     let mut generated_clap_gpt_enum = Vec::new();
     let mut generated_struct_names = Vec::new();
-    // let mut all_get_json_calls = Vec::new();
 
     for variant in data.variants.iter() {
         let variant_name = &variant.ident;
@@ -637,6 +669,8 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         let integer_ident = format_ident!("{}", integer_type);
         let string_type = "string";
         let string_ident = format_ident!("{}", string_type);
+        let array_type = "array";
+        let array_ident = format_ident!("{}", array_type);
 
         let field_info: Vec<_> = variant
             .fields
@@ -685,6 +719,9 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     }
                     syn::Type::Array(_) => {
                         println!("Field {} is of array type", field_name);
+                        return quote! {
+                            generate_value_arg_info!(#array_ident, #field_name)
+                        };
                     }
                     _ => {}
                 }
@@ -778,6 +815,20 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         .map(|name| format!("{}", name))
         .collect();
 
+    let match_arms: Vec<_> = generated_struct_names
+        .iter()
+        .map(|struct_name| {
+            let response_name = format_ident!("{}", struct_name);
+
+            quote! {
+                Ok(FunctionResponse::#response_name(response)) => {
+                    let result = response.execute_command();
+                    return result.run().await;
+                }
+            }
+        })
+        .collect();
+
     let commands_gpt_impl = quote! {
         #[derive(Debug)]
         pub enum FunctionResponse {
@@ -788,31 +839,119 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
 
         impl CommandsGPT {
             #all_function_calls
-            pub fn parse_gpt_function_call(function_call: &FunctionCall) -> Result<FunctionResponse, Box<dyn std::error::Error>> {
+
+            fn to_snake_case(camel_case: &str) -> String {
+                let mut snake_case = String::new();
+                for (i, ch) in camel_case.char_indices() {
+                    if i > 0 && ch.is_uppercase() {
+                        snake_case.push('_');
+                    }
+                    snake_case.extend(ch.to_lowercase());
+                }
+                snake_case
+            }
+
+            pub fn parse_gpt_function_call(function_call: &FunctionCall) -> Result<FunctionResponse, Box<dyn std::error::Error + Send + Sync + 'static>> {
                 match function_call.name.as_str() {
                     #(
                     #struct_names => {
-                        let arguments: #generated_struct_names = serde_json::from_str(&function_call.arguments)?;
-                        Ok(FunctionResponse::#generated_struct_names(arguments))
+                        match serde_json::from_str::<#generated_struct_names>(&function_call.arguments) {
+                            Ok(arguments) => Ok(FunctionResponse::#generated_struct_names(arguments)),
+                            Err(_) => {
+                                let snake_case_args = function_call.arguments
+                                    .as_str()
+                                    .split(',')
+                                    .map(|s| {
+                                        let mut parts = s.split(':');
+                                        match (parts.next(), parts.next()) {
+                                            (Some(key), Some(value)) => {
+                                                let key_trimmed = key.trim_matches(|c: char| !c.is_alphanumeric()).trim();
+                                                let key_snake_case = Self::to_snake_case(key_trimmed);
+                                                format!("\"{}\":{}", key_snake_case, value)
+                                            },
+                                            _ => s.to_owned()
+                                        }
+                                    })
+                                    .collect::<Vec<String>>()
+                                    .join(",");
+
+                                let snake_case_args = format!("{{{}", snake_case_args);
+
+                                let arguments: #generated_struct_names = serde_json::from_str(&snake_case_args)?;
+                                Ok(FunctionResponse::#generated_struct_names(arguments))
+                            }
+                        }
                     },
                     )*
-                    _ => Err(format!("Unknown function name: {}", function_call.name).into())
+                    _ => Err(Box::new(CommandError::new("Unknown function name")))
                 }
             }
-            // pub fn parse_gpt_function_call(function_call: &FunctionCall) -> Result<FunctionResponse, Box<dyn std::error::Error>> {
-            //     match function_call.name.as_str() {
-            //         #(
-            //         #generated_struct_names::name().as_str() => {
-            //             let arguments: #generated_struct_names = serde_json::from_str(&function_call.arguments)?;
-            //             Ok(FunctionResponse::#generated_struct_names(arguments))
-            //         },
-            //         )*
-            //         _ => Err(format!("Unknown function name: {}", function_call.name).into())
-            //     }
-            // }
+
+            fn calculate_token_count(text: &str) -> usize {
+                let bpe = cl100k_base().unwrap();
+                bpe.encode_ordinary(&text).len()
+            }
+
+            pub async fn run(
+                prompt: &String,
+                model_name: &str,
+                request_token_limit: usize,
+                max_response_tokens: u16,
+                custom_system_message: Option<String>,
+            ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+                let function_args =
+                    get_function_chat_completion_args(CommandsGPT::all_function_jsons)?;
+                let mut system_message_tokens = 7;
+                let mut system_message = String::from("You are a helpful function calling bot.");
+                if let Some(custom_system_message) = custom_system_message {
+                    system_message = custom_system_message;
+                    system_message_tokens = Self::calculate_token_count(system_message.as_str());
+                }
+
+                let request_token_total = function_args.1 + system_message_tokens + Self::calculate_token_count(prompt.as_str());
+                if request_token_total > request_token_limit {
+                    return Err(Box::new(CommandError::new("Request token count is too high")));
+                }
+
+                let request = CreateChatCompletionRequestArgs::default()
+                    .max_tokens(max_response_tokens)
+                    .model(model_name)
+                    .messages([ChatCompletionRequestMessageArgs::default()
+                        .role(Role::System)
+                        .content(system_message)
+                        .build()?,
+                    ChatCompletionRequestMessageArgs::default()
+                        .role(Role::User)
+                        .content(prompt)
+                        .build()?])
+                    .functions(function_args.0)
+                    .function_call("auto")
+                    .build()?;
+
+                let client = Client::new();
+                let response_message = client
+                    .chat()
+                    .create(request)
+                    .await?
+                    .choices
+                    .get(0)
+                    .unwrap()
+                    .message
+                    .clone();
+
+                if let Some(function_call) = response_message.function_call {
+                    match Self::parse_gpt_function_call(&function_call) {
+                        #(#match_arms,)*
+                        Ok(_) => Ok(None),
+                        Err(e) => {
+                            return Err(Box::new(CommandError::new("Something went wrong running gpt command.")));
+                        }
+                    }
+                } else {
+                    return Ok(None);
+                }
+            }
         }
-
-
     };
 
     let gen = quote! {
@@ -824,27 +963,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
 
         #commands_gpt_impl
     };
-
-    // println!("This is the generated struct:  ");
-    // println!("{:#?}", gen.to_string());
-
-    // println!("These are the generated structs:");
-    // for struct_def in &generated_structs {
-    //     println!("{:#?}", struct_def.to_string());
-    // }
-    //
-    // println!("These are the JSON generator functions:");
-    // for func_def in &json_generator_functions {
-    //     println!("{:#?}", func_def.to_string());
-    // }
-    //
-    // println!("These are the generated Clap GPT enums:");
-    // for enum_def in &generated_clap_gpt_enum {
-    //     println!("{:#?}", enum_def.to_string());
-    // }
-    //
-    // println!("This is the Commands GPT impl:");
-    // println!("{:#?}", commands_gpt_impl.to_string());
+    // println!("There was an commands:  {:#?}", gen.to_string());
 
     return gen.into();
 }
