@@ -1,15 +1,15 @@
 [package]
 name = "openai-func-enums"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Frank Fralick <frankfralick@gmail.com>"]
-keywords = ["openai", "async-openai", "ai"]
+keywords = ["openai", "async-openai", "ai", "clap"]
 description = "A companion crate for async-openai to ease the composition of function calls by leveraging Rust's type system and enums."
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/frankfralick/openai-func-enums"
 homepage = "https://github.com/frankfralick/openai-func-enums"
 readme = "README.md"
-categories = ["api-bindings"]
+categories = ["api-bindings", "cli"]
 
 
 [dependencies]

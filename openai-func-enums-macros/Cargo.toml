@@ -1,6 +1,6 @@
 [package]
 name = "openai-func-enums-macros"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Frank Fralick <frankfralick@gmail.com>"]
 description = "A companion crate for async-openai to ease the composition of function calls by leveraging Rust's type system and enums."
 edition = "2021"
