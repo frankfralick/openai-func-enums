@@ -273,7 +273,6 @@ pub fn generate_enum_info(input: TokenStream) -> TokenStream {
             use serde_json::Value;
             let mut total_tokens = 0;
 
-            // let (arg_desc, arg_count) = <#enum_ident as ::openai_func_enums::FunctionArgument>::argument_description_with_token_count();
             let (arg_desc, arg_count) = <#enum_ident as EnumDescriptor>::arg_description_with_token_count();
             total_tokens += arg_count;
 
@@ -302,24 +301,10 @@ pub fn generate_enum_info(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
-// pub fn generate_value_arg_info(input: TokenStream, arg_name: TokenStream) -> TokenStream {
 pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
-    // println!("Got here 100");
-    // let value_ident = parse_macro_input!(input as Punctuated<LitStr, Token![,]>);
-    // for arg in value_ident.into() {
-    //     if arg.is_ident() {
-    //         println!("this is an ident: {:#?}", arg);
-    //     }
-    // }
-
-    // for arg in input.into() {
-    //     let test = arg;
-    // }
-
     let mut type_and_name_values = Vec::new();
 
     let tokens = input.into_iter().collect::<Vec<TokenTree>>();
-    // println!("Got here 200");
     for token in tokens {
         match &token {
             TokenTree::Ident(ident) => {
@@ -328,12 +313,6 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
             _ => {}
         }
     }
-    // let arg_name_ident = parse_macro_input!(arg_name as Ident);
-    // println!("value_ident: {:#?}", value_ident);
-    // let value_ident_tokens = calculate_token_count(value_ident.)
-    // let name = value_ident.to_string();
-    // let name = String::from("test");
-    // let name_tokens = calculate_token_count(name.as_str());
 
     if type_and_name_values.len() == 2 {
         let name = type_and_name_values[1].clone();
@@ -346,35 +325,41 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
                 let mut total_tokens = 0;
                 total_tokens += #name_tokens;
                 total_tokens += #type_name_tokens;
-                //
-                // let (arg_desc, arg_count) = <#enum_ident as EnumDescriptor>::arg_description_with_token_count();
-                // total_tokens += arg_count;
-                //
-                // let enum_name = <#enum_ident as EnumDescriptor>::name_with_token_count();
-                // total_tokens += enum_name.1;
-                // total_tokens += enum_name.1;
-                //
-                // let enum_variants = <#enum_ident as VariantDescriptors>::variant_names_with_token_counts();
-                // total_tokens += enum_variants.iter().map(|(_, token_count)| *token_count).sum::<usize>();
-                //
-                let json_enum = serde_json::json!({
-                    #name: {
-                        "type": #type_name,
-                    }
-                });
+                if #type_name == String::from("array") {
+                    let json_enum = serde_json::json!({
+                        #name: {
+                            "type": #type_name,
+                            "items": {
+                                "type": "string",
+                            },
+                        }
+                    });
 
-                total_tokens += 11;
+                    total_tokens += 22;
 
-                (json_enum, total_tokens)
+                    (json_enum, total_tokens)
+
+                } else {
+                    let json_enum = serde_json::json!({
+                        #name: {
+                            "type": #type_name,
+                        }
+                    });
+
+                    total_tokens += 11;
+
+                    (json_enum, total_tokens)
+
+                }
             }
         };
         return output.into();
     }
 
-    // output.into()
     let gen = quote! {};
     return gen.into();
 }
+
 /// This procedural macro attribute is used to specify a description for an enum variant.
 ///
 /// The `func_description` attribute does not modify the input it is given.
@@ -464,7 +449,7 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
 
                                 return Ok(());
                             }
-                            Err(meta.error("unrecognized my_attribute"))
+                            Err(meta.error("unrecognized attribute"))
                         });
                         match attribute_parsed {
                             Ok(_attribute_parsed) => {}
@@ -506,11 +491,16 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
                         }
 
                         pub fn to_function_call() -> ChatCompletionFunctionCall {
-                            let function_call_json = json!({
-                                "name": stringify!(#struct_name)
-                            });
+                            ChatCompletionFunctionCall::Function {
+                                name: stringify!(#struct_name).to_string(),
+                            }
+                        }
 
-                            ChatCompletionFunctionCall::Object(function_call_json)
+                        pub fn to_tool_choice() -> ChatCompletionToolChoiceOption {
+                            ChatCompletionToolChoiceOption::Named(ChatCompletionNamedToolChoice {
+                                r#type: ChatCompletionToolType::Function,
+                                function: FunctionName { name: stringify!(#struct_name).to_string() }
+                            })
                         }
 
                         pub fn get_function_json() -> (Value, usize) {
@@ -570,32 +560,32 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
     }
 }
 
-/// The `SubcommandGPT` procedural macro is used to derive a structure 
+/// The `SubcommandGPT` procedural macro is used to derive a structure
 /// which encapsulates various chat completion commands.
-/// 
+///
 /// This macro should be applied to an enum. It generates various supporting
 /// structures and methods, including structures representing the command arguments,
 /// methods for converting between the argument structures and the original enum,
-/// JSON conversion methods, and an implementation of the original enum that provides 
+/// JSON conversion methods, and an implementation of the original enum that provides
 /// methods for executing the commands and dealing with the responses.
 ///
 /// Each variant of the original enum will be converted into a corresponding structure,
 /// and each field in the variant will become a field in the generated structure.
 /// The generated structures will derive `serde::Deserialize` and `Debug` automatically.
-/// 
-/// This macro also generates methods for calculating the token count of a string and 
+///
+/// This macro also generates methods for calculating the token count of a string and
 /// for executing commands based on function calls received from the chat API.
-/// 
-/// The types of fields in the enum variants determine how the corresponding fields in the 
-/// generated structures are treated. For example, fields of type `String` or `&str` are 
-/// converted to JSON value arguments with type `"string"`, while fields of type `u8`, `u16`, 
-/// `u32`, `u64`, `usize`, `i8`, `i16`, `i32`, `i64`, `isize`, `f32` or `f64` are converted 
-/// to JSON value arguments with type `"integer"` or `"number"` respectively. 
+///
+/// The types of fields in the enum variants determine how the corresponding fields in the
+/// generated structures are treated. For example, fields of type `String` or `&str` are
+/// converted to JSON value arguments with type `"string"`, while fields of type `u8`, `u16`,
+/// `u32`, `u64`, `usize`, `i8`, `i16`, `i32`, `i64`, `isize`, `f32` or `f64` are converted
+/// to JSON value arguments with type `"integer"` or `"number"` respectively.
 /// For fields with a tuple type, currently this macro simply prints that the field is of a tuple type.
 /// For fields with an array type, they are converted to JSON value arguments with type `"array"`.
 ///
 /// When running the chat command, a custom system message can be optionally provided.
-/// If provided, this message will be used as the system message in the chat request. 
+/// If provided, this message will be used as the system message in the chat request.
 /// If not provided, a default system message will be used.
 ///
 /// If the total token count of the request exceeds a specified limit, an error will be returned.
@@ -623,7 +613,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
 
     for variant in data.variants.iter() {
         let variant_name = &variant.ident;
-        let struct_name = format_ident!("{}Response", variant_name);
+        let struct_name = format_ident!("{}", variant_name);
         generated_struct_names.push(struct_name.clone());
         let mut variant_desc = String::new();
         let mut variant_desc_tokens = 0_usize;
@@ -682,6 +672,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     format_ident!("{}", to_snake_case(&f.ty.to_token_stream().to_string()))
                 };
                 let field_type = &f.ty;
+
                 match field_type {
                     syn::Type::Path(typepath) if typepath.qself.is_none() => {
                         let type_ident = &typepath.path.segments.last().unwrap().ident;
@@ -703,11 +694,12 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                     generate_value_arg_info!(#string_ident, #field_name)
                                 };
                             }
+                            "Vec" => {
+                                return quote! {
+                                    generate_value_arg_info!(#array_ident, #field_name)
+                                };
+                            }
                             _ => {
-                                // Not a great way to determine if we've got a struct or an enum,
-                                // TODO: remove the panic out of the variant description related
-                                // macro so this doesn't blow up.
-                                // println!("Field {} is of type {}", field_name, type_ident);
                                 return quote! {
                                     generate_enum_info!(#field_type)
                                 };
@@ -723,7 +715,12 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                             generate_value_arg_info!(#array_ident, #field_name)
                         };
                     }
-                    _ => {}
+                    _ => {
+                        println!(
+                            "Field {} is of another type:  {:#?}",
+                            field_name, field_type
+                        );
+                    }
                 }
                 quote! {}
             })
@@ -736,11 +733,16 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                 }
 
                 pub fn to_function_call() -> ChatCompletionFunctionCall {
-                    let function_call_json = json!({
-                        "name": stringify!(#struct_name)
-                    });
+                    ChatCompletionFunctionCall::Function {
+                        name: stringify!(#struct_name).to_string(),
+                    }
+                }
 
-                    ChatCompletionFunctionCall::Object(function_call_json)
+                pub fn to_tool_choice() -> ChatCompletionToolChoiceOption {
+                    ChatCompletionToolChoiceOption::Named(ChatCompletionNamedToolChoice {
+                        r#type: ChatCompletionToolType::Function,
+                        function: FunctionName { name: stringify!(#struct_name).to_string() }
+                    })
                 }
 
                 pub fn execute_command(&self) -> #name {
@@ -786,8 +788,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         });
 
         generated_structs.push(quote! {
-            #[derive(serde::Deserialize, Debug)]
-            // #[serde(rename_all = "PascalCase")]
+            #[derive(Clone, serde::Deserialize, Debug)]
             pub struct #struct_name {
                 #(#fields)*
             }
@@ -823,14 +824,54 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
             quote! {
                 Ok(FunctionResponse::#response_name(response)) => {
                     let result = response.execute_command();
-                    return result.run().await;
+                    let run_result = result.run(execution_strategy_clone).await;
+                    match run_result {
+                        Ok(run_result) => {
+                            {
+                                let prior_result_clone = prior_result.clone();
+                                let mut prior_result_lock = prior_result_clone.lock().await;
+                                *prior_result_lock = run_result;
+                            }
+                            println!();
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            println!("{:#?}", e);
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let match_arms_no_return: Vec<_> = generated_struct_names
+        .iter()
+        .map(|struct_name| {
+            let response_name = format_ident!("{}", struct_name);
+
+            quote! {
+                Ok(FunctionResponse::#response_name(response)) => {
+                    let result = response.execute_command();
+                    let run_result = result.run(execution_strategy_clone).await;
+                    match run_result {
+                        Ok(run_result) => {
+                            {
+                                let mut prior_result_lock = prior_result_clone.lock().await;
+                                *prior_result_lock = run_result;
+                            }
+                            println!();
+                        }
+                        Err(e) => {
+                            println!("{:#?}", e);
+                        }
+                    }
                 }
             }
         })
         .collect();
 
     let commands_gpt_impl = quote! {
-        #[derive(Debug)]
+        #[derive(Clone, Debug, Deserialize)]
         pub enum FunctionResponse {
             #(
                 #generated_struct_names(#generated_struct_names),
@@ -877,13 +918,22 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
 
                                 let snake_case_args = format!("{{{}", snake_case_args);
 
-                                let arguments: #generated_struct_names = serde_json::from_str(&snake_case_args)?;
-                                Ok(FunctionResponse::#generated_struct_names(arguments))
+                                match serde_json::from_str::<#generated_struct_names>(&snake_case_args) {
+                                    Ok(arguments) => {
+                                        Ok(FunctionResponse::#generated_struct_names(arguments))
+                                    }
+                                    Err(e) => {
+                                        Err(Box::new(CommandError::new("There was an issue deserializing function arguments.")))
+                                    }
+                                }
                             }
                         }
                     },
                     )*
-                    _ => Err(Box::new(CommandError::new("Unknown function name")))
+                    _ => {
+                        println!("{:#?}", function_call);
+                        Err(Box::new(CommandError::new("Unknown function name")))
+                    }
                 }
             }
 
@@ -898,9 +948,11 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                 request_token_limit: usize,
                 max_response_tokens: u16,
                 custom_system_message: Option<String>,
-            ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>> {
-                let function_args =
-                    get_function_chat_completion_args(CommandsGPT::all_function_jsons)?;
+                prior_result: Arc<Mutex<Option<String>>>,
+                execution_strategy: ToolCallExecutionStrategy,
+            ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+                let tool_args = get_tool_chat_completion_args(CommandsGPT::all_function_jsons)?;
+
                 let mut system_message_tokens = 7;
                 let mut system_message = String::from("You are a helpful function calling bot.");
                 if let Some(custom_system_message) = custom_system_message {
@@ -908,7 +960,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     system_message_tokens = Self::calculate_token_count(system_message.as_str());
                 }
 
-                let request_token_total = function_args.1 + system_message_tokens + Self::calculate_token_count(prompt.as_str());
+                let request_token_total = tool_args.1 + system_message_tokens + Self::calculate_token_count(prompt.as_str());
                 if request_token_total > request_token_limit {
                     return Err(Box::new(CommandError::new("Request token count is too high")));
                 }
@@ -916,16 +968,16 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                 let request = CreateChatCompletionRequestArgs::default()
                     .max_tokens(max_response_tokens)
                     .model(model_name)
-                    .messages([ChatCompletionRequestMessageArgs::default()
-                        .role(Role::System)
+                    // .temperature(0.0)
+                    .messages([ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessageArgs::default()
                         .content(system_message)
-                        .build()?,
-                    ChatCompletionRequestMessageArgs::default()
-                        .role(Role::User)
-                        .content(prompt)
-                        .build()?])
-                    .functions(function_args.0)
-                    .function_call("auto")
+                        .build()?),
+                    ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessageArgs::default()
+                        .content(prompt.to_string())
+                        .build()?)])
+                    .tools(tool_args.0)
+                    // What is going on here? Fails on their end if this is included.
+                    // .tool_choice("auto")
                     .build()?;
 
                 let client = Client::new();
@@ -939,16 +991,112 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     .message
                     .clone();
 
-                if let Some(function_call) = response_message.function_call {
-                    match Self::parse_gpt_function_call(&function_call) {
-                        #(#match_arms,)*
-                        Ok(_) => Ok(None),
-                        Err(e) => {
-                            return Err(Box::new(CommandError::new("Something went wrong running gpt command.")));
+                if let Some(tool_calls) = response_message.tool_calls {
+                    if tool_calls.len() == 1 {
+                        let execution_strategy_clone = execution_strategy.clone();
+                        match Self::parse_gpt_function_call(&tool_calls.first().unwrap().function) {
+                            #(#match_arms,)*
+                            Err(e) => {
+                                println!("{:#?}", e);
+                                return Err(Box::new(CommandError::new("Error running GPT command")));
+                            }
+                        };
+                    } else {
+                        println!();
+                        println!("Called {} tools. Execution strategy set to {:#?}.", tool_calls.len(), execution_strategy);
+                        println!();
+
+                        match execution_strategy {
+                            ToolCallExecutionStrategy::Async => {
+                                let mut tasks = Vec::new();
+
+                                for tool_call in tool_calls.iter() {
+                                    match tool_call.r#type {
+                                        ChatCompletionToolType::Function => {
+                                            let function = tool_call.function.clone();
+                                            let prior_result_clone = prior_result.clone();
+                                            let execution_strategy_clone = execution_strategy.clone();
+
+                                            let task = tokio::spawn( async move {
+                                                match Self::parse_gpt_function_call(&function) {
+                                                    #(#match_arms_no_return,)*
+                                                    Err(e) => {
+                                                        println!("{:#?}", e);
+                                                    }
+                                                }
+                                            });
+                                            tasks.push(task);
+                                        },
+                                    }
+                                }
+
+                                for task in tasks {
+                                    let _ = task.await;
+                                }
+                            },
+                            ToolCallExecutionStrategy::Synchronous => {
+                                for tool_call in tool_calls.iter() {
+                                    match tool_call.r#type {
+                                        ChatCompletionToolType::Function => {
+                                            let prior_result_clone = prior_result.clone();
+                                            let execution_strategy_clone = execution_strategy.clone();
+
+                                            match Self::parse_gpt_function_call(&tool_call.function) {
+                                                #(#match_arms_no_return,)*
+                                                Err(e) => {
+                                                    println!("{:#?}", e);
+                                                }
+                                            }
+                                        },
+                                    }
+                                }
+                            },
+                            ToolCallExecutionStrategy::Parallel => {
+                                let mut handles = Vec::new();
+
+                                for tool_call in tool_calls.iter() {
+                                    match tool_call.r#type {
+                                        ChatCompletionToolType::Function => {
+                                            let function = tool_call.function.clone();
+                                            let prior_result_clone = prior_result.clone();
+                                            // let execution_strategy_clone = execution_strategy.clone();
+                                            // TODO: Think through. There's a lot of overhead to
+                                            // make os threads this way. For now assume that if
+                                            // strategy is set to "Parallel" that we only want to
+                                            // put the intially returned tool calls on threads, and
+                                            // if they themselves contain something multi-step we
+                                            // will run those as if they are io-bound. Potentially
+                                            // makes sense to support letting variants get
+                                            // decorated with a execution strategy preference like
+                                            // "this is io bound" or "this is cpu bound" and then
+                                            let execution_strategy_clone = ToolCallExecutionStrategy::Async;
+
+                                            let handle = std::thread::spawn(move || {
+                                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                                rt.block_on(async {
+                                                    match Self::parse_gpt_function_call(&function) {
+                                                        #(#match_arms_no_return,)*
+                                                        Err(e) => {
+                                                            println!("{:#?}", e);
+                                                        }
+                                                    }
+
+                                                })
+                                            });
+                                            handles.push(handle);
+                                        },
+                                    }
+                                }
+
+                                for handle in handles {
+                                    let _ = handle.join();
+                                }
+                            },
                         }
                     }
+                    Ok(())
                 } else {
-                    return Ok(None);
+                    return Ok(());
                 }
             }
         }
@@ -963,7 +1111,6 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
 
         #commands_gpt_impl
     };
-    // println!("There was an commands:  {:#?}", gen.to_string());
 
     return gen.into();
 }
@@ -973,19 +1120,15 @@ fn get_comment_from_attr(attr: &Attribute) -> Option<String> {
         if let Meta::NameValue(meta) = &attr.meta {
             if meta.path.is_ident("doc") {
                 let value = meta.value.clone();
-                // println!("{:#?}", value);
                 match value {
-                    Expr::Lit(value) => {
-                        // println!("{:#?}", value);
-                        match value.lit {
-                            Lit::Str(value) => {
-                                return Some(value.value());
-                            }
-                            _ => {
-                                return None;
-                            }
+                    Expr::Lit(value) => match value.lit {
+                        Lit::Str(value) => {
+                            return Some(value.value());
                         }
-                    }
+                        _ => {
+                            return None;
+                        }
+                    },
                     _ => {
                         return None;
                     }

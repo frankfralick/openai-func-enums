@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = [
     "openai-func-enums",
     "openai-func-enums-macros"

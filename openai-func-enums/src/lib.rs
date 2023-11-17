@@ -2,7 +2,10 @@ use std::error::Error;
 use std::fmt::{self, Debug};
 
 use async_openai::error::OpenAIError;
-use async_openai::types::{ChatCompletionFunctions, ChatCompletionFunctionsArgs};
+use async_openai::types::{
+    ChatCompletionFunctions, ChatCompletionFunctionsArgs, ChatCompletionTool,
+    ChatCompletionToolArgs, ChatCompletionToolType,
+};
 use async_trait::async_trait;
 pub use openai_func_enums_macros::*;
 use serde_json::Value;
@@ -45,6 +48,13 @@ pub trait VariantDescriptors {
     fn variant_name_with_token_count(&self) -> (String, usize);
 }
 
+#[derive(Clone, Debug)]
+pub enum ToolCallExecutionStrategy {
+    Parallel,
+    Async,
+    Synchronous,
+}
+
 #[derive(Debug)]
 pub struct CommandError {
     details: String,
@@ -76,6 +86,7 @@ impl From<OpenAIError> for CommandError {
 pub trait RunCommand: Sync + Send {
     async fn run(
         &self,
+        execution_strategy: ToolCallExecutionStrategy,
     ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>>;
 }
 
@@ -110,18 +121,6 @@ macro_rules! parse_function_call {
         }
     };
 }
-// #[macro_export]
-// macro_rules! parse_function_call {
-//     ($func_call:expr) => {
-//         match serde_json::from_str::<$type>($func_call.arguments.as_str()) {
-//             Ok(response) => Some(response),
-//             Err(e) => {
-//                 eprintln!("Failed to parse function call: {}", e);
-//                 None
-//             }
-//         }
-//     };
-// }
 
 /// A function to get the chat completion arguments for a function.
 ///
@@ -178,4 +177,68 @@ pub fn get_function_chat_completion_args(
     }
 
     Ok((chat_completion_functions_vec, total_tokens))
+}
+
+/// A function to get the chat completion arguments for a tool.
+///
+/// # Arguments
+///
+/// * `tool_func` - A function that returns a JSON representation of a tool and the count of tokens in the representation.
+///
+/// # Returns
+///
+/// * A `Result` which is `Ok` if the tool chat completion arguments were successfully obtained, and `Err` otherwise.
+///   The `Ok` variant contains a tuple where the first element is a `ChatCompletionTool` representing the chat completion arguments for the tool,
+///   and the second element is a `usize` representing the total count of tokens in the tool's JSON representation.
+pub fn get_tool_chat_completion_args(
+    tool_func: impl Fn() -> (Value, usize),
+) -> Result<(Vec<ChatCompletionTool>, usize), OpenAIError> {
+    let (tool_json, total_tokens) = tool_func();
+
+    let mut chat_completion_tool_vec = Vec::new();
+
+    let values = match tool_json {
+        Value::Object(_) => vec![tool_json],
+        Value::Array(arr) => arr,
+        _ => {
+            return Err(OpenAIError::InvalidArgument(String::from(
+                "Something went wrong parsing the json",
+            )))
+        }
+    };
+
+    for value in values {
+        let parameters = match value.get("parameters") {
+            Some(parameters) => Some(parameters.clone()),
+            None => None,
+        };
+
+        let description = value
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let name = value.get("name").unwrap().as_str().unwrap().to_string();
+
+        let chat_completion_functions_args = match description {
+            Some(desc) => ChatCompletionFunctionsArgs::default()
+                .name(name)
+                .description(desc)
+                .parameters(parameters)
+                .build()?,
+            None => ChatCompletionFunctionsArgs::default()
+                .name(name)
+                .parameters(parameters)
+                .build()?,
+        };
+
+        let chat_completion_tool = ChatCompletionToolArgs::default()
+            .r#type(ChatCompletionToolType::Function)
+            .function(chat_completion_functions_args)
+            .build()?;
+
+        chat_completion_tool_vec.push(chat_completion_tool);
+    }
+
+    Ok((chat_completion_tool_vec, total_tokens))
 }

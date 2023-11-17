@@ -1,20 +1,25 @@
 use async_openai::{
     types::{
-        ChatCompletionFunctionCall, ChatCompletionRequestMessageArgs,
-        CreateChatCompletionRequestArgs, FunctionCall, Role,
+        ChatCompletionFunctionCall, ChatCompletionNamedToolChoice, ChatCompletionRequestMessage,
+        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+        ChatCompletionToolChoiceOption, ChatCompletionToolType, CreateChatCompletionRequestArgs,
+        FunctionCall, FunctionName,
     },
     Client,
 };
 use async_trait::async_trait;
 use clap::{Parser, Subcommand, ValueEnum};
 use openai_func_enums::{
-    arg_description, generate_enum_info, generate_value_arg_info,
-    get_function_chat_completion_args, CommandError, EnumDescriptor, RunCommand, SubcommandGPT,
+    arg_description, generate_enum_info, generate_value_arg_info, get_tool_chat_completion_args,
+    CommandError, EnumDescriptor, RunCommand, SubcommandGPT, ToolCallExecutionStrategy,
     VariantDescriptors,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
+use std::time::Instant;
 use tiktoken_rs::cl100k_base;
+use tokio::sync::Mutex;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -50,9 +55,9 @@ pub enum Commands {
         b: f64,
         rounding_mode: RoundingMode,
     },
-    /// A string with plain english prompts on separate lines describing the steps to accomplish a multistep request.
+    /// CallMultiStep is designed to efficiently process complex, multi-step user requests. It takes an array of text prompts, each detailing a specific step in a sequential task. This function is crucial for handling requests where the output of one step forms the input of the next. When constructing the prompt list, consider the dependency and order of tasks. Independent tasks within the same step should be consolidated into a single prompt to leverage parallel processing capabilities. This function ensures that multi-step tasks are executed in the correct sequence and that all dependencies are respected, thus faithfully representing and fulfilling the user's request."
     CallMultiStep {
-        prompt_list: String,
+        prompt_list: Vec<String>,
     },
     GPT {
         prompt: String,
@@ -63,14 +68,29 @@ pub enum Commands {
 impl RunCommand for Commands {
     async fn run(
         &self,
+        execution_strategy: ToolCallExecutionStrategy,
     ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>> {
-        let max_response_tokens = 250_u16;
+        let max_response_tokens = 1000_u16;
         let request_token_limit = 4191;
-        let model_name = "gpt-4-0613";
-        let system_message = "You are a helpful function-calling bot. If the user prompt \
-                              involves multiple steps, use the CallMultiStep function with \
-                              a new-line-separated string with each line descripbing a step.";
+        let model_name = "gpt-4-1106-preview";
+        let system_message = "You are an advanced function-calling bot, adept at handling complex, \
+                              multi-step user requests. Your role is to discern and articulate \
+                              each step of a user's request, especially when it involves sequential \
+                              operations. Use the CallMultiStep function for requests that require \
+                              sequential processing. Each step should be described in a separate \
+                              prompt, with attention to whether the steps are independent or \
+                              interdependent. For interdependent steps, ensure each prompt \
+                              accurately represents the sequence and dependencies of the tasks. \
+                              Remember, a single step may encompass multiple tasks that can be \
+                              executed in parallel. Your goal is to capture the entire scope of the \
+                              user's request, structuring it into an appropriate sequence of function \
+                              calls without omitting any steps. For example, if a user asks to add 8 \
+                              and 2 in the first step, and then requests the result to be multiplied \
+                              by 7 and 5 in separate tasks of the second step, use CallMultiStep with \
+                              two prompts: the first for addition, and the second combining both \
+                              multiplication tasks, recognizing their parallel nature.";
 
+        println!();
         match self {
             Commands::Add {
                 a,
@@ -78,7 +98,13 @@ impl RunCommand for Commands {
                 rounding_mode,
             } => {
                 let result = rounding_mode.round(a + b);
-                println!("Result: {}", result);
+                println!(
+                    "Result of adding {} and {} with rounding mode {:#?}: {}",
+                    a,
+                    b,
+                    rounding_mode.variant_name_with_token_count().0,
+                    result
+                );
                 return Ok(Some(result.to_string()));
             }
             Commands::Subtract {
@@ -87,7 +113,13 @@ impl RunCommand for Commands {
                 rounding_mode,
             } => {
                 let result = rounding_mode.round(a - b);
-                println!("Result: {}", result);
+                println!(
+                    "Result of subtracting {} from {} with rounding mode {:#?}: {}",
+                    b,
+                    a,
+                    rounding_mode.variant_name_with_token_count().0,
+                    result
+                );
                 return Ok(Some(result.to_string()));
             }
             Commands::Multiply {
@@ -96,7 +128,13 @@ impl RunCommand for Commands {
                 rounding_mode,
             } => {
                 let result = rounding_mode.round(a * b);
-                println!("Result: {}", result);
+                println!(
+                    "Result of multiplying {} and {} with rounding mode {:#?}: {}",
+                    a,
+                    b,
+                    rounding_mode.variant_name_with_token_count().0,
+                    result
+                );
                 return Ok(Some(result.to_string()));
             }
             Commands::Divide {
@@ -106,61 +144,72 @@ impl RunCommand for Commands {
             } => {
                 if *b != 0.0 {
                     let result = rounding_mode.round(a / b);
-                    println!("Result: {}", result);
+                    println!(
+                        "Result of dividing {} by {} with rounding mode {:#?}: {}",
+                        a,
+                        b,
+                        rounding_mode.variant_name_with_token_count().0,
+                        result
+                    );
                     return Ok(Some(result.to_string()));
                 } else {
                     return Err(Box::new(CommandError::new("Cannot divide by zero")));
                 }
             }
             Commands::CallMultiStep { prompt_list } => {
-                let prompts: Vec<_> = prompt_list.split('\n').collect();
+                let prior_result = Arc::new(Mutex::new(None));
+                for (i, prompt) in prompt_list.iter().enumerate() {
+                    let prior_result_clone = prior_result.clone();
 
-                let mut prior_result: Option<String> = None;
-                for (i, prompt) in prompts.iter().enumerate() {
                     match i {
                         0 => {
-                            println!("This is the first step: {}", prompt);
-                            prior_result = CommandsGPT::run(
+                            CommandsGPT::run(
                                 &prompt.to_string(),
                                 model_name,
                                 request_token_limit,
                                 max_response_tokens,
                                 Some(system_message.to_string()),
+                                prior_result_clone,
+                                execution_strategy.clone(),
                             )
-                            .await?
+                            .await?;
                         }
 
                         _ => {
-                            if i == prompts.len() - 1 {
-                                println!("This is the last prompt: {}", prompt);
-                            } else {
-                                println!("This is the next prompt: {}", prompt);
-                            }
-                            if let Some(prior) = prior_result {
+                            let prior_result_guard = prior_result.lock().await;
+                            if let Some(prior) = &*prior_result_guard {
                                 let new_prompt =
-                                    format!("The prior result was: {}. {}", prior, prompt);
-                                prior_result = CommandsGPT::run(
+                                    format!("The prior result was: {}. {}", prior.clone(), prompt);
+                                drop(prior_result_guard);
+
+                                CommandsGPT::run(
                                     &new_prompt,
                                     model_name,
                                     request_token_limit,
                                     max_response_tokens,
                                     Some(system_message.to_string()),
+                                    prior_result_clone,
+                                    execution_strategy.clone(),
                                 )
-                                .await?
+                                .await?;
                             } else {
-                                prior_result = None;
+                                *prior_result.lock().await = None;
                             }
                         }
                     }
                 }
+                return Ok(None);
             }
             Commands::GPT { prompt } => {
+                let prior_result = Arc::new(Mutex::new(None));
                 CommandsGPT::run(
                     prompt,
                     model_name,
                     request_token_limit,
                     max_response_tokens,
                     Some(system_message.to_string()),
+                    prior_result,
+                    execution_strategy.clone(),
                 )
                 .await?;
             }
@@ -196,12 +245,20 @@ impl RoundingMode {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    cli.command.run().await.map_err(|e| {
-        Box::new(CommandError::new(&format!(
-            "Command failed with error: {}",
-            e
-        )))
-    })?;
+    let start_time = Instant::now();
+
+    cli.command
+        .run(ToolCallExecutionStrategy::Async)
+        .await
+        .map_err(|e| {
+            Box::new(CommandError::new(&format!(
+                "Command failed with error: {}",
+                e
+            )))
+        })?;
+
+    let duration = start_time.elapsed();
+    println!("Command completed in {:.2} seconds", duration.as_secs_f64());
 
     Ok(())
 }

@@ -1,12 +1,13 @@
 use async_openai::{
     types::{
-        ChatCompletionFunctionCall, ChatCompletionRequestMessageArgs,
-        CreateChatCompletionRequestArgs, Role,
+        ChatCompletionFunctionCall, ChatCompletionNamedToolChoice,
+        ChatCompletionRequestUserMessageArgs, ChatCompletionToolChoiceOption,
+        ChatCompletionToolType, CreateChatCompletionRequestArgs, FunctionName,
     },
     Client,
 };
 use openai_func_enums::{
-    arg_description, func_description, generate_enum_info, get_function_chat_completion_args,
+    arg_description, func_description, generate_enum_info, get_tool_chat_completion_args,
     parse_function_call, EnumDescriptor, FunctionCallResponse, VariantDescriptors,
 };
 use serde::Deserialize;
@@ -17,18 +18,18 @@ use std::error::Error;
 async fn main() -> Result<(), Box<dyn Error>> {
     let client = Client::new();
 
-    let function_args =
-        get_function_chat_completion_args(GetCurrentWeatherResponse::get_function_json)?;
+    let tool_args = get_tool_chat_completion_args(GetCurrentWeatherResponse::get_function_json)?;
+
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(512u16)
-        .model("gpt-3.5-turbo-0613")
-        .messages([ChatCompletionRequestMessageArgs::default()
-            .role(Role::User)
-            .content("What's the weather like in Swainsboro, Georgia?")
-            .build()?])
-        // .functions(vec![function_args.0])
-        .functions(function_args.0)
-        .function_call(GetCurrentWeatherResponse::to_function_call())
+        .model("gpt-4-1106-preview")
+        .messages([ChatCompletionRequestUserMessageArgs::default()
+            .content("What's the weather like in Swainsboro, GA, Nashville, TN, Los Angeles, CA?")
+            .build()?
+            .into()])
+        .tools(tool_args.0)
+        // Only one function call will be returned if tool_choice is passed.
+        // .tool_choice(GetCurrentWeatherResponse::to_tool_choice())
         .build()?;
 
     let response_message = client
@@ -41,20 +42,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .message
         .clone();
 
-    if let Some(function_call) = response_message.function_call {
-        println!("This is the function call returned:");
-        println!("{:#?}", function_call);
+    if let Some(tool_calls) = response_message.tool_calls {
+        println!("These are the tool calls returned:");
+        println!("{:#?}", tool_calls);
+        println!("");
 
-        let current_weather_response =
-            parse_function_call!(function_call, GetCurrentWeatherResponse);
+        for tool_call in tool_calls.iter() {
+            match tool_call.r#type {
+                ChatCompletionToolType::Function => {
+                    let current_weather_response =
+                        parse_function_call!(tool_call.function, GetCurrentWeatherResponse);
 
-        if let Some(current_weather_response) = current_weather_response {
-            match current_weather_response.location {
-                Location::Atlanta => {
-                    println!("Function called with location: Atlanta");
-                }
-                _ => {
-                    println!("Function call with a location other than Atlanta.");
+                    if let Some(current_weather_response) = current_weather_response {
+                        println!(
+                            "Function called with location: {:#?}",
+                            current_weather_response.location
+                        );
+                    }
                 }
             }
         }
