@@ -716,7 +716,10 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                         };
                     }
                     _ => {
-                        println!("Field {} is of another type.", field_name);
+                        println!(
+                            "Field {} is of another type.",
+                            field_name
+                        );
                     }
                 }
                 quote! {}
