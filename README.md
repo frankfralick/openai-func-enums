@@ -1,6 +1,7 @@
+
 # openai-func-enums:
 
-openai-func-enums is a set of procedural macros and other functions, to be used in conjunction with async-openai, that make it easy to use enums to compose "functions" that can be passed to OpenAIs chat completions api.
+openai-func-enums is an unofficial Rust library for OpenAI. It contains a set of procedural macros and other functions, to be used in conjunction with [async-openai](https://github.com/64bit/async-openai), that make it easy to use enums to compose "function" tool types that can be passed to OpenAI's chat completions api.
 
 ### Why?
 
@@ -17,6 +18,8 @@ The motivation for this was the need to leverage OpenAI function calls for logic
 - **Parallel tool calls:** If OpenAI elects to call more than one of the available tools at the same time, this library will process them based on an execution strategy you specify. It can run them asynchronously, synchronously, or on os threads depending on your need. The clap integration example goes into more detail about parallel tool calls.
 
 ## Usage
+
+**Note: This library requires async-openai, which requires that you have your api key in an environment variable called `OPENAI_API_KEY`.
 
 First, define an enum to hold the possible functions, with each variant being a function. The fields on these variants indicate the required arguments, and each field must also be an enum. The variants of these fields determine the allowed choices that can be passed to OpenAI's API. For example, here's a function definition for getting current weather:
 

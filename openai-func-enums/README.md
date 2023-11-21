@@ -1,7 +1,7 @@
 
 # openai-func-enums:
 
-openai-func-enums is a set of procedural macros and other functions, to be used in conjunction with async-openai, that make it easy to use enums to compose "functions" that can be passed to OpenAIs chat completions api.
+openai-func-enums is an unofficial Rust library for OpenAI. It contains a set of procedural macros and other functions, to be used in conjunction with [async-openai](https://github.com/64bit/async-openai), that make it easy to use enums to compose "function" tool types that can be passed to OpenAI's chat completions api.
 
 ### Why?
 
@@ -18,6 +18,8 @@ The motivation for this was the need to leverage OpenAI function calls for logic
 - **Parallel tool calls:** If OpenAI elects to call more than one of the available tools at the same time, this library will process them based on an execution strategy you specify. It can run them asynchronously, synchronously, or on os threads depending on your need. The clap integration example goes into more detail about parallel tool calls.
 
 ## Usage
+
+**Note: This library requires async-openai, which requires that you have your api key in an environment variable called `OPENAI_API_KEY`.
 
 First, define an enum to hold the possible functions, with each variant being a function. The fields on these variants indicate the required arguments, and each field must also be an enum. The variants of these fields determine the allowed choices that can be passed to OpenAI's API. For example, here's a function definition for getting current weather:
 
@@ -158,7 +160,7 @@ The library provides a trait called "RunCommand", which makes you implement a "r
 #### Parallel Tool Calls:
 Currently the "run" function for RunCommand takes a single argument called that is an enum ToolCallExecutionStrategy. This sets how parallel tool calls will get executed if a prompt results in more than one. Running with ```ToolCallExecutionStrategy::Async``` will run each tool call it can concurrently and this is what should be used is most cases. For now at least, selecting "Parallel" will run just the initial parallel calls on their own os threads. Subsequent parallel calls made in the course of a multi-step request will not spawn new os threads and they will run concurrently.
 
-![Clap Example](./openai-func-enums/assets/clap_example.PNG)
+![Clap Example](./assets/clap_example.PNG)
 
 
 ```rust
