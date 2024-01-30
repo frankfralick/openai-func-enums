@@ -3,8 +3,8 @@ use std::fmt::{self, Debug};
 
 use async_openai::error::OpenAIError;
 use async_openai::types::{
-    ChatCompletionFunctions, ChatCompletionFunctionsArgs, ChatCompletionTool,
-    ChatCompletionToolArgs, ChatCompletionToolType,
+    ChatCompletionTool, ChatCompletionToolArgs, ChatCompletionToolType, FunctionObject,
+    FunctionObjectArgs,
 };
 use async_trait::async_trait;
 pub use openai_func_enums_macros::*;
@@ -78,7 +78,7 @@ impl Error for CommandError {}
 
 impl From<OpenAIError> for CommandError {
     fn from(error: OpenAIError) -> Self {
-        CommandError::new(&format!("OpenAI Error: {}", error.to_string()))
+        CommandError::new(&format!("OpenAI Error: {}", error))
     }
 }
 
@@ -135,7 +135,8 @@ macro_rules! parse_function_call {
 ///   and the second element is a `usize` representing the total count of tokens in the function's JSON representation.
 pub fn get_function_chat_completion_args(
     func: impl Fn() -> (Value, usize),
-) -> Result<(Vec<ChatCompletionFunctions>, usize), OpenAIError> {
+    // ) -> Result<(Vec<ChatCompletionFunctions>, usize), OpenAIError> {
+) -> Result<(Vec<FunctionObject>, usize), OpenAIError> {
     let (func_json, total_tokens) = func();
 
     let mut chat_completion_functions_vec = Vec::new();
@@ -151,10 +152,7 @@ pub fn get_function_chat_completion_args(
     };
 
     for value in values {
-        let parameters = match value.get("parameters") {
-            Some(parameters) => Some(parameters.clone()),
-            None => None,
-        };
+        let parameters = value.get("parameters").cloned();
 
         let description = value
             .get("description")
@@ -163,12 +161,12 @@ pub fn get_function_chat_completion_args(
 
         let name = value.get("name").unwrap().as_str().unwrap().to_string();
         let chat_completion_args = match description {
-            Some(desc) => ChatCompletionFunctionsArgs::default()
+            Some(desc) => FunctionObjectArgs::default()
                 .name(name)
                 .description(desc)
                 .parameters(parameters)
                 .build()?,
-            None => ChatCompletionFunctionsArgs::default()
+            None => FunctionObjectArgs::default()
                 .name(name)
                 .parameters(parameters)
                 .build()?,
@@ -208,10 +206,7 @@ pub fn get_tool_chat_completion_args(
     };
 
     for value in values {
-        let parameters = match value.get("parameters") {
-            Some(parameters) => Some(parameters.clone()),
-            None => None,
-        };
+        let parameters = value.get("parameters").cloned();
 
         let description = value
             .get("description")
@@ -221,12 +216,12 @@ pub fn get_tool_chat_completion_args(
         let name = value.get("name").unwrap().as_str().unwrap().to_string();
 
         let chat_completion_functions_args = match description {
-            Some(desc) => ChatCompletionFunctionsArgs::default()
+            Some(desc) => FunctionObjectArgs::default()
                 .name(name)
                 .description(desc)
                 .parameters(parameters)
                 .build()?,
-            None => ChatCompletionFunctionsArgs::default()
+            None => FunctionObjectArgs::default()
                 .name(name)
                 .parameters(parameters)
                 .build()?,

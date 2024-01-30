@@ -1,5 +1,4 @@
 use proc_macro::{TokenStream, TokenTree};
-// use proc_macro2::Group;
 use quote::{format_ident, quote, ToTokens};
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Expr, Ident, Lit, Meta};
 use tiktoken_rs::cl100k_base;
@@ -79,7 +78,7 @@ pub fn enum_descriptor_derive(input: TokenStream) -> TokenStream {
             let _result = attr.parse_nested_meta(|meta| {
                 let content = meta.input;
 
-                while !content.is_empty() {
+                if !content.is_empty() {
                     if meta.path.is_ident("description") {
                         let value = meta.value()?;
                         if let Ok(Lit::Str(value)) = value.parse() {
@@ -306,11 +305,8 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
 
     let tokens = input.into_iter().collect::<Vec<TokenTree>>();
     for token in tokens {
-        match &token {
-            TokenTree::Ident(ident) => {
-                type_and_name_values.push(ident.to_string());
-            }
-            _ => {}
+        if let TokenTree::Ident(ident) = &token {
+            type_and_name_values.push(ident.to_string());
         }
     }
 
@@ -325,7 +321,7 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
                 let mut total_tokens = 0;
                 total_tokens += #name_tokens;
                 total_tokens += #type_name_tokens;
-                if #type_name == String::from("array") {
+                if #type_name == "array" {
                     let json_enum = serde_json::json!({
                         #name: {
                             "type": #type_name,
@@ -357,7 +353,7 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
     }
 
     let gen = quote! {};
-    return gen.into();
+    gen.into()
 }
 
 /// This procedural macro attribute is used to specify a description for an enum variant.
@@ -438,7 +434,7 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
                         let attribute_parsed = attr.parse_nested_meta(|meta| {
                             let content = meta.input;
 
-                            while !content.is_empty() {
+                            if !content.is_empty() {
                                 if meta.path.is_ident("description") {
                                     let value = meta.value()?;
                                     if let Ok(Lit::Str(value)) = value.parse() {
@@ -554,7 +550,8 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
 
             };
 
-            return gen.into();
+            // gen.into()
+            gen
         }
         _ => panic!("FunctionCallResponse can only be derived for enums"),
     }
@@ -618,8 +615,9 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         let mut variant_desc = String::new();
         let mut variant_desc_tokens = 0_usize;
 
+        // let description = get_comment_from_attr(&variant_attrs);
         for variant_attrs in &variant.attrs {
-            let description = get_comment_from_attr(&variant_attrs);
+            let description = get_comment_from_attr(variant_attrs);
             if let Some(description) = description {
                 variant_desc = description;
                 variant_desc_tokens = calculate_token_count(variant_desc.as_str());
@@ -716,10 +714,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                         };
                     }
                     _ => {
-                        println!(
-                            "Field {} is of another type.",
-                            field_name
-                        );
+                        println!("Field {} is of another type.", field_name);
                     }
                 }
                 quote! {}
@@ -910,7 +905,9 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                                 let key_snake_case = Self::to_snake_case(key_trimmed);
                                                 format!("\"{}\":{}", key_snake_case, value)
                                             },
-                                            _ => s.to_owned()
+                                            // _ => s.to_owned()
+                                            // _ => s.to_string()
+                                            _ => s.to_string()
                                         }
                                     })
                                     .collect::<Vec<String>>()
@@ -1112,7 +1109,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         #commands_gpt_impl
     };
 
-    return gen.into();
+    gen.into()
 }
 
 fn get_comment_from_attr(attr: &Attribute) -> Option<String> {
@@ -1164,7 +1161,7 @@ fn get_comment_from_attr(attr: &Attribute) -> Option<String> {
 /// Note: This function can fail if the `cl100k_base` tokenizer is not properly initialized or the text cannot be tokenized.
 fn calculate_token_count(text: &str) -> usize {
     let bpe = cl100k_base().unwrap();
-    bpe.encode_ordinary(&text).len()
+    bpe.encode_ordinary(text).len()
 }
 
 /// Convert a camelCase or PascalCase string into a snake_case string.
