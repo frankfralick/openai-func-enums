@@ -4,4 +4,3 @@ members = [
     "clap-integration",
     "get-current-weather",
 ]
-

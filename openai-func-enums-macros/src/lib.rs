@@ -1,7 +1,6 @@
 use proc_macro::{TokenStream, TokenTree};
 use quote::{format_ident, quote, ToTokens};
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Expr, Ident, Lit, Meta};
-use tiktoken_rs::cl100k_base;
 
 /// The `arg_description` attribute is a procedural macro used to provide additional description for an enum.
 ///
@@ -269,7 +268,6 @@ pub fn generate_enum_info(input: TokenStream) -> TokenStream {
 
     let output = quote! {
         {
-            use serde_json::Value;
             let mut total_tokens = 0;
 
             let (arg_desc, arg_count) = <#enum_ident as EnumDescriptor>::arg_description_with_token_count();
@@ -317,7 +315,6 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
         let type_name_tokens = calculate_token_count(type_name.as_str());
         let output = quote! {
             {
-                use serde_json::Value;
                 let mut total_tokens = 0;
                 total_tokens += #name_tokens;
                 total_tokens += #type_name_tokens;
@@ -499,7 +496,7 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
                             })
                         }
 
-                        pub fn get_function_json() -> (Value, usize) {
+                        pub fn get_function_json() -> (serde_json::Value, usize) {
                             let mut parameters = serde_json::Map::new();
                             let mut total_tokens = 0;
                             for (arg_json, arg_tokens) in vec![#(#field_info),*] {
@@ -544,13 +541,16 @@ fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
             }
 
             let gen = quote! {
+                use async_openai::types::{ChatCompletionFunctionCall, ChatCompletionNamedToolChoice, ChatCompletionToolChoiceOption, FunctionName,};
+                use serde_json::{json, Value};
+                use openai_func_enums::generate_enum_info;
+
                 #(#generated_structs)*
 
                 #(#json_generator_functions)*
 
             };
 
-            // gen.into()
             gen
         }
         _ => panic!("FunctionCallResponse can only be derived for enums"),
@@ -746,7 +746,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                pub fn get_function_json() -> (Value, usize) {
+                pub fn get_function_json() -> (serde_json::Value, usize) {
                     let mut parameters = serde_json::Map::new();
                     let mut total_tokens = 0;
 
@@ -764,7 +764,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                         );
                     }
 
-                    let function_json = json!({
+                    let function_json = serde_json::json!({
                         "name": stringify!(#struct_name),
                         "description": #variant_desc,
                         "parameters": {
@@ -827,7 +827,6 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                 let mut prior_result_lock = prior_result_clone.lock().await;
                                 *prior_result_lock = run_result;
                             }
-                            println!();
                             return Ok(());
                         }
                         Err(e) => {
@@ -854,7 +853,6 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                 let mut prior_result_lock = prior_result_clone.lock().await;
                                 *prior_result_lock = run_result;
                             }
-                            println!();
                         }
                         Err(e) => {
                             println!("{:#?}", e);
@@ -905,8 +903,6 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                                 let key_snake_case = Self::to_snake_case(key_trimmed);
                                                 format!("\"{}\":{}", key_snake_case, value)
                                             },
-                                            // _ => s.to_owned()
-                                            // _ => s.to_string()
                                             _ => s.to_string()
                                         }
                                     })
@@ -935,7 +931,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
             }
 
             fn calculate_token_count(text: &str) -> usize {
-                let bpe = cl100k_base().unwrap();
+                let bpe = tiktoken_rs::cl100k_base().unwrap();
                 bpe.encode_ordinary(&text).len()
             }
 
@@ -991,6 +987,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                 if let Some(tool_calls) = response_message.tool_calls {
                     if tool_calls.len() == 1 {
                         let execution_strategy_clone = execution_strategy.clone();
+
                         match Self::parse_gpt_function_call(&tool_calls.first().unwrap().function) {
                             #(#match_arms,)*
                             Err(e) => {
@@ -999,7 +996,14 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                             }
                         };
                     } else {
-                        println!();
+                        // TODO: FML. Can't get feature flags to get passed through from consuming
+                        // code. Compilation context issue.
+                        // #[cfg(feature = "verbose")]
+                        // {
+                        //     println!("Called {} tools. Execution strategy set to {:#?}.", tool_calls.len(), execution_strategy);
+                        //     println!();
+                        //
+                        // }
                         println!("Called {} tools. Execution strategy set to {:#?}.", tool_calls.len(), execution_strategy);
                         println!();
 
@@ -1100,6 +1104,23 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
     };
 
     let gen = quote! {
+        use serde::Deserialize;
+        use serde_json::{json, Value};
+        use openai_func_enums::{
+            generate_enum_info, generate_value_arg_info, get_tool_chat_completion_args,
+        };
+
+        use async_trait::async_trait;
+        use async_openai::{
+            types::{
+                ChatCompletionFunctionCall, ChatCompletionNamedToolChoice, ChatCompletionRequestMessage,
+                ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+                ChatCompletionToolChoiceOption, ChatCompletionToolType, CreateChatCompletionRequestArgs,
+                FunctionCall, FunctionName,
+            },
+            Client,
+        };
+
         #(#generated_structs)*
 
         #(#json_generator_functions)*
@@ -1160,7 +1181,7 @@ fn get_comment_from_attr(attr: &Attribute) -> Option<String> {
 ///
 /// Note: This function can fail if the `cl100k_base` tokenizer is not properly initialized or the text cannot be tokenized.
 fn calculate_token_count(text: &str) -> usize {
-    let bpe = cl100k_base().unwrap();
+    let bpe = tiktoken_rs::cl100k_base().unwrap();
     bpe.encode_ordinary(text).len()
 }
 
@@ -1178,7 +1199,7 @@ fn calculate_token_count(text: &str) -> usize {
 ///
 /// * `String` - The converted snake_case string.
 ///
-/// # Examplejj
+/// # Example
 ///
 /// ```
 /// let camel_case = "HelloWorld";

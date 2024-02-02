@@ -115,7 +115,7 @@ macro_rules! parse_function_call {
         match serde_json::from_str::<$type>($func_call.arguments.as_str()) {
             Ok(response) => Some(response),
             Err(e) => {
-                eprintln!("Failed to parse function call: {}", e);
+                println!("Failed to parse function call: {}", e);
                 None
             }
         }

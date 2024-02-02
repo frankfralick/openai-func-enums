@@ -1,24 +1,10 @@
-use async_openai::{
-    types::{
-        ChatCompletionFunctionCall, ChatCompletionNamedToolChoice, ChatCompletionRequestMessage,
-        ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
-        ChatCompletionToolChoiceOption, ChatCompletionToolType, CreateChatCompletionRequestArgs,
-        FunctionCall, FunctionName,
-    },
-    Client,
-};
-use async_trait::async_trait;
 use clap::{Parser, Subcommand, ValueEnum};
 use openai_func_enums::{
-    arg_description, generate_enum_info, generate_value_arg_info, get_tool_chat_completion_args,
-    CommandError, EnumDescriptor, RunCommand, SubcommandGPT, ToolCallExecutionStrategy,
-    VariantDescriptors,
+    arg_description, CommandError, EnumDescriptor, RunCommand, SubcommandGPT,
+    ToolCallExecutionStrategy, VariantDescriptors,
 };
-use serde::Deserialize;
-use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Instant;
-use tiktoken_rs::cl100k_base;
 use tokio::sync::Mutex;
 
 #[derive(Parser)]
@@ -90,7 +76,6 @@ impl RunCommand for Commands {
                               two prompts: the first for addition, and the second combining both \
                               multiplication tasks, recognizing their parallel nature.";
 
-        println!();
         match self {
             Commands::Add {
                 a,

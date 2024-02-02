@@ -1,17 +1,15 @@
 use async_openai::{
     types::{
-        ChatCompletionFunctionCall, ChatCompletionNamedToolChoice,
-        ChatCompletionRequestUserMessageArgs, ChatCompletionToolChoiceOption,
-        ChatCompletionToolType, CreateChatCompletionRequestArgs, FunctionName,
+        ChatCompletionRequestUserMessageArgs, ChatCompletionToolType,
+        CreateChatCompletionRequestArgs,
     },
     Client,
 };
 use openai_func_enums::{
-    arg_description, func_description, generate_enum_info, get_tool_chat_completion_args,
-    parse_function_call, EnumDescriptor, FunctionCallResponse, VariantDescriptors,
+    arg_description, func_description, get_tool_chat_completion_args, parse_function_call,
+    EnumDescriptor, FunctionCallResponse, VariantDescriptors,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
 use std::error::Error;
 
 #[tokio::main]
@@ -37,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .create(request)
         .await?
         .choices
-        .get(0)
+        .first()
         .unwrap()
         .message
         .clone();
@@ -45,7 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(tool_calls) = response_message.tool_calls {
         println!("These are the tool calls returned:");
         println!("{:#?}", tool_calls);
-        println!("");
+        println!();
 
         for tool_call in tool_calls.iter() {
             match tool_call.r#type {
