@@ -215,24 +215,26 @@ pub fn get_tool_chat_completion_args(
 
         let name = value.get("name").unwrap().as_str().unwrap().to_string();
 
-        let chat_completion_functions_args = match description {
-            Some(desc) => FunctionObjectArgs::default()
-                .name(name)
-                .description(desc)
-                .parameters(parameters)
-                .build()?,
-            None => FunctionObjectArgs::default()
-                .name(name)
-                .parameters(parameters)
-                .build()?,
-        };
+        if name != "GPT" {
+            let chat_completion_functions_args = match description {
+                Some(desc) => FunctionObjectArgs::default()
+                    .name(name)
+                    .description(desc)
+                    .parameters(parameters)
+                    .build()?,
+                None => FunctionObjectArgs::default()
+                    .name(name)
+                    .parameters(parameters)
+                    .build()?,
+            };
 
-        let chat_completion_tool = ChatCompletionToolArgs::default()
-            .r#type(ChatCompletionToolType::Function)
-            .function(chat_completion_functions_args)
-            .build()?;
+            let chat_completion_tool = ChatCompletionToolArgs::default()
+                .r#type(ChatCompletionToolType::Function)
+                .function(chat_completion_functions_args)
+                .build()?;
 
-        chat_completion_tool_vec.push(chat_completion_tool);
+            chat_completion_tool_vec.push(chat_completion_tool);
+        }
     }
 
     Ok((chat_completion_tool_vec, total_tokens))
