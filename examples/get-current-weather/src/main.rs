@@ -1,76 +1,104 @@
-use async_openai::{
-    types::{
-        ChatCompletionRequestUserMessageArgs, ChatCompletionToolType,
-        CreateChatCompletionRequestArgs,
-    },
-    Client,
-};
 use openai_func_enums::{
-    arg_description, func_description, get_tool_chat_completion_args, parse_function_call,
-    EnumDescriptor, FunctionCallResponse, VariantDescriptors,
+    arg_description, logger_task, CommandError, EnumDescriptor, RunCommand,
+    ToolCallExecutionStrategy, ToolSet, VariantDescriptors,
 };
-use serde::Deserialize;
-use std::error::Error;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::spawn;
+use tokio::sync::Mutex;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let client = Client::new();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (sender, receiver) = mpsc::channel(100);
+    let logger = Arc::new(Logger { sender });
+    spawn(logger_task(receiver));
+    let logger_clone = logger.clone();
 
-    let tool_args = get_tool_chat_completion_args(GetCurrentWeatherResponse::get_function_json)?;
+    let start_time = Instant::now();
 
-    let request = CreateChatCompletionRequestArgs::default()
-        .max_tokens(512u16)
-        .model("gpt-4-1106-preview")
-        .messages([ChatCompletionRequestUserMessageArgs::default()
-            .content("What's the weather like in Swainsboro, GA, Nashville, TN, Los Angeles, CA?")
-            .build()?
-            .into()])
-        .tools(tool_args.0)
-        // Only one function call will be returned if tool_choice is passed.
-        // .tool_choice(GetCurrentWeatherResponse::to_tool_choice())
-        .build()?;
+    (FunctionDef::GPT {
+        prompt: "What's the weather like in Swainsboro, GA, Nashville, TN, Los Angeles, CA?"
+            .to_string(),
+    })
+    .run(ToolCallExecutionStrategy::Async, None, logger_clone)
+    .await
+    .map_err(|e| {
+        Box::new(CommandError::new(&format!(
+            "Command failed with error: {}",
+            e
+        )))
+    })?;
 
-    let response_message = client
-        .chat()
-        .create(request)
-        .await?
-        .choices
-        .first()
-        .unwrap()
-        .message
-        .clone();
-
-    if let Some(tool_calls) = response_message.tool_calls {
-        println!("These are the tool calls returned:");
-        println!("{:#?}", tool_calls);
-        println!();
-
-        for tool_call in tool_calls.iter() {
-            match tool_call.r#type {
-                ChatCompletionToolType::Function => {
-                    let current_weather_response =
-                        parse_function_call!(tool_call.function, GetCurrentWeatherResponse);
-
-                    if let Some(current_weather_response) = current_weather_response {
-                        println!(
-                            "Function called with location: {:#?}",
-                            current_weather_response.location
-                        );
-                    }
-                }
-            }
-        }
-    }
+    let duration = start_time.elapsed();
+    println!("Command completed in {:.2} seconds", duration.as_secs_f64());
 
     Ok(())
 }
 
-#[derive(Debug, FunctionCallResponse)]
+#[derive(Debug, ToolSet)]
 pub enum FunctionDef {
-    #[func_description(
-        description = "Get the current weather in the location closest to the one provided location"
-    )]
-    GetCurrentWeather(Location, TemperatureUnits),
+    /// "Get the current weather in the location closest to the one provided location"
+    GetCurrentWeather {
+        location: Location,
+        temperature_units: TemperatureUnits,
+    },
+
+    GPT {
+        prompt: String,
+    },
+}
+
+#[async_trait]
+impl RunCommand for FunctionDef {
+    async fn run(
+        &self,
+        execution_strategy: ToolCallExecutionStrategy,
+        _arguments: Option<Vec<String>>,
+        logger: Arc<Logger>,
+    ) -> Result<
+        (Option<String>, Option<Vec<String>>),
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+    > {
+        let max_response_tokens = 1000_u16;
+        let request_token_limit = 4191;
+        let model_name = "gpt-4-1106-preview";
+        let system_message = "You are an advanced function-calling bot.";
+
+        match self {
+            FunctionDef::GetCurrentWeather {
+                location,
+                temperature_units,
+            } => {
+                println!("Called GetCurrentWeather function with argument:");
+                println!("{:#?}", location);
+                println!("{:#?}", temperature_units);
+            }
+            FunctionDef::GPT { prompt } => {
+                let prior_result = Arc::new(Mutex::new(None));
+                let command_args = Arc::new(Mutex::new(None));
+                let logger_clone = logger.clone();
+
+                // If you want to see an example of limiting presentation of function calls based
+                // on a token budget, look at the clap integration example.
+                CommandsGPT::run(
+                    prompt,
+                    model_name,
+                    request_token_limit,
+                    max_response_tokens,
+                    Some(system_message.to_string()),
+                    prior_result,
+                    execution_strategy.clone(),
+                    command_args,
+                    None,
+                    None,
+                    logger_clone,
+                )
+                .await?;
+            }
+        }
+
+        Ok((None, None))
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, EnumDescriptor, VariantDescriptors)]

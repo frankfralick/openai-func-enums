@@ -1,10 +1,13 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use openai_func_enums::{
-    arg_description, CommandError, EnumDescriptor, RunCommand, SubcommandGPT,
-    ToolCallExecutionStrategy, VariantDescriptors,
+    logger_task, rank_functions, single_embedding, CommandError, EnumDescriptor, FuncEmbedding,
+    RunCommand, ToolCallExecutionStrategy, ToolSet, VariantDescriptors,
 };
+use std::io::Read;
 use std::sync::Arc;
 use std::time::Instant;
+use std::{fs::File, path::Path};
+use tokio::spawn;
 use tokio::sync::Mutex;
 
 #[derive(Parser)]
@@ -15,7 +18,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Debug, Subcommand, SubcommandGPT)]
+#[derive(Debug, Subcommand, ToolSet)]
 pub enum Commands {
     /// Adds two numbers
     Add {
@@ -55,7 +58,12 @@ impl RunCommand for Commands {
     async fn run(
         &self,
         execution_strategy: ToolCallExecutionStrategy,
-    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        _arguments: Option<Vec<String>>,
+        logger: Arc<Logger>,
+    ) -> Result<
+        (Option<String>, Option<Vec<String>>),
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+    > {
         let max_response_tokens = 1000_u16;
         let request_token_limit = 4191;
         let model_name = "gpt-4-1106-preview";
@@ -90,7 +98,7 @@ impl RunCommand for Commands {
                     rounding_mode.variant_name_with_token_count().0,
                     result
                 );
-                return Ok(Some(result.to_string()));
+                return Ok((Some(result.to_string()), None));
             }
             Commands::Subtract {
                 a,
@@ -105,7 +113,7 @@ impl RunCommand for Commands {
                     rounding_mode.variant_name_with_token_count().0,
                     result
                 );
-                return Ok(Some(result.to_string()));
+                return Ok((Some(result.to_string()), None));
             }
             Commands::Multiply {
                 a,
@@ -120,7 +128,7 @@ impl RunCommand for Commands {
                     rounding_mode.variant_name_with_token_count().0,
                     result
                 );
-                return Ok(Some(result.to_string()));
+                return Ok((Some(result.to_string()), None));
             }
             Commands::Divide {
                 a,
@@ -136,15 +144,27 @@ impl RunCommand for Commands {
                         rounding_mode.variant_name_with_token_count().0,
                         result
                     );
-                    return Ok(Some(result.to_string()));
+                    return Ok((Some(result.to_string()), None));
                 } else {
                     return Err(Box::new(CommandError::new("Cannot divide by zero")));
                 }
             }
             Commands::CallMultiStep { prompt_list } => {
+                let _ = logger
+                    .sender
+                    .send(String::from("this is the prompt list"))
+                    .await;
+                let message = format!("{:#?}", prompt_list);
+                let _ = logger.sender.send(message).await;
+
                 let prior_result = Arc::new(Mutex::new(None));
+
+                let command_args_list: Vec<String> = Vec::new();
+                let command_args = Arc::new(Mutex::new(Some(command_args_list)));
                 for (i, prompt) in prompt_list.iter().enumerate() {
                     let prior_result_clone = prior_result.clone();
+                    let command_args_clone = command_args.clone();
+                    let logger_clone = logger.clone();
 
                     match i {
                         0 => {
@@ -156,8 +176,12 @@ impl RunCommand for Commands {
                                 Some(system_message.to_string()),
                                 prior_result_clone,
                                 execution_strategy.clone(),
+                                command_args_clone,
+                                None,
+                                None,
+                                logger_clone,
                             )
-                            .await?;
+                            .await?
                         }
 
                         _ => {
@@ -175,18 +199,42 @@ impl RunCommand for Commands {
                                     Some(system_message.to_string()),
                                     prior_result_clone,
                                     execution_strategy.clone(),
+                                    command_args_clone,
+                                    None,
+                                    None,
+                                    logger_clone,
                                 )
-                                .await?;
+                                .await?
                             } else {
                                 *prior_result.lock().await = None;
                             }
                         }
                     }
                 }
-                return Ok(None);
+                let result = String::from("Ok.");
+                return Ok((Some(result), None));
             }
             Commands::GPT { prompt } => {
+                let prompt_embedding = single_embedding(prompt, FUNC_ENUMS_EMBED_MODEL).await?;
+
                 let prior_result = Arc::new(Mutex::new(None));
+                let command_args = Arc::new(Mutex::new(None));
+                let embed_path = Path::new(FUNC_ENUMS_EMBED_PATH);
+                let mut ranked_func_names = vec![];
+                let logger_clone = logger.clone();
+
+                if embed_path.exists() {
+                    let mut file = File::open(embed_path).unwrap();
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes).unwrap();
+
+                    let archived_funcs =
+                        rkyv::check_archived_root::<Vec<FuncEmbedding>>(&bytes).unwrap();
+                    ranked_func_names = rank_functions(archived_funcs, prompt_embedding).await;
+                }
+
+                let required_funcs = vec![String::from("CallMultiStep")];
+
                 CommandsGPT::run(
                     prompt,
                     model_name,
@@ -195,12 +243,16 @@ impl RunCommand for Commands {
                     Some(system_message.to_string()),
                     prior_result,
                     execution_strategy.clone(),
+                    command_args,
+                    Some(ranked_func_names),
+                    Some(required_funcs),
+                    logger_clone,
                 )
                 .await?;
             }
         };
 
-        Ok(None)
+        Ok((None, None))
     }
 }
 
@@ -228,12 +280,17 @@ impl RoundingMode {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (sender, receiver) = mpsc::channel(100);
+    let logger = Arc::new(Logger { sender });
+    spawn(logger_task(receiver));
+    let logger_clone = logger.clone();
+
     let cli = Cli::parse();
 
     let start_time = Instant::now();
 
     cli.command
-        .run(ToolCallExecutionStrategy::Async)
+        .run(ToolCallExecutionStrategy::Async, None, logger_clone)
         .await
         .map_err(|e| {
             Box::new(CommandError::new(&format!(

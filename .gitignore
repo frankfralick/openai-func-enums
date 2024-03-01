@@ -6,3 +6,7 @@
 *.vscode
 # *.git
 *.json
+
+# Readme staging/notes etc. I don't want to include
+README_NOTES.md
+

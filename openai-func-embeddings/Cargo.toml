@@ -1,0 +1,15 @@
+[package]
+name = "openai-func-embeddings"
+version = "0.3.0"
+edition = "2021"
+description = "A companion crate for async-openai to ease the composition of function calls by leveraging Rust's type system and enums."
+license = "MIT"
+repository = "https://github.com/frankfralick/openai-func-enums"
+homepage = "https://github.com/frankfralick/openai-func-enums"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-openai = "0.18.2"
+rkyv = { version = "0.7.44", features = ["validation"]}
+tokio = { version = "1.25.0", features = ["sync"] }

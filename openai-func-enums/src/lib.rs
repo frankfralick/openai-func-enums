@@ -1,14 +1,16 @@
-use std::error::Error;
-use std::fmt::{self, Debug};
-
 use async_openai::error::OpenAIError;
 use async_openai::types::{
     ChatCompletionTool, ChatCompletionToolArgs, ChatCompletionToolType, FunctionObject,
     FunctionObjectArgs,
 };
 use async_trait::async_trait;
+pub use openai_func_embeddings::*;
 pub use openai_func_enums_macros::*;
 use serde_json::Value;
+use std::error::Error;
+use std::fmt::{self, Debug};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// A trait to provide a descriptor for an enumeration.
 /// This includes the name of the enum and the count of tokens in its name.
@@ -23,7 +25,7 @@ pub trait EnumDescriptor {
     fn arg_description_with_token_count() -> (String, usize);
 }
 
-pub trait SubcommandGPT {
+pub trait ToolSet {
     // fn name_with_token_count() -> (String, usize);
     // fn arg_description_with_token_count() -> (String, usize);
 }
@@ -82,12 +84,35 @@ impl From<OpenAIError> for CommandError {
     }
 }
 
+pub struct Logger {
+    pub sender: mpsc::Sender<String>,
+}
+
+impl Logger {
+    pub async fn log(&self, message: String) {
+        let _ = self.sender.send(message).await;
+    }
+}
+
+pub async fn logger_task(mut receiver: mpsc::Receiver<String>) {
+    while let Some(message) = receiver.recv().await {
+        println!("{}", message);
+    }
+}
+
+// There is a better way than to keep adding return types.
+// Trying to determine which road to go down on other issues first.
 #[async_trait]
 pub trait RunCommand: Sync + Send {
     async fn run(
         &self,
         execution_strategy: ToolCallExecutionStrategy,
-    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>>;
+        arguments: Option<Vec<String>>,
+        logger: Arc<Logger>,
+    ) -> Result<
+        (Option<String>, Option<Vec<String>>),
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+    >;
 }
 
 /// A trait for responses from function calls.
@@ -192,6 +217,60 @@ pub fn get_tool_chat_completion_args(
     tool_func: impl Fn() -> (Value, usize),
 ) -> Result<(Vec<ChatCompletionTool>, usize), OpenAIError> {
     let (tool_json, total_tokens) = tool_func();
+
+    let mut chat_completion_tool_vec = Vec::new();
+
+    let values = match tool_json {
+        Value::Object(_) => vec![tool_json],
+        Value::Array(arr) => arr,
+        _ => {
+            return Err(OpenAIError::InvalidArgument(String::from(
+                "Something went wrong parsing the json",
+            )))
+        }
+    };
+
+    for value in values {
+        let parameters = value.get("parameters").cloned();
+
+        let description = value
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let name = value.get("name").unwrap().as_str().unwrap().to_string();
+
+        if name != "GPT" {
+            let chat_completion_functions_args = match description {
+                Some(desc) => FunctionObjectArgs::default()
+                    .name(name)
+                    .description(desc)
+                    .parameters(parameters)
+                    .build()?,
+                None => FunctionObjectArgs::default()
+                    .name(name)
+                    .parameters(parameters)
+                    .build()?,
+            };
+
+            let chat_completion_tool = ChatCompletionToolArgs::default()
+                .r#type(ChatCompletionToolType::Function)
+                .function(chat_completion_functions_args)
+                .build()?;
+
+            chat_completion_tool_vec.push(chat_completion_tool);
+        }
+    }
+
+    Ok((chat_completion_tool_vec, total_tokens))
+}
+
+pub fn get_tools_token_limited(
+    tool_func: impl Fn(Vec<String>, Vec<String>) -> (Value, usize),
+    ranked_func_names: Vec<String>,
+    required_func_names: Vec<String>,
+) -> Result<(Vec<ChatCompletionTool>, usize), OpenAIError> {
+    let (tool_json, total_tokens) = tool_func(ranked_func_names, required_func_names);
 
     let mut chat_completion_tool_vec = Vec::new();
 
