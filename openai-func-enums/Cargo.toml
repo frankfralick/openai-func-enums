@@ -1,6 +1,6 @@
 [package]
 name = "openai-func-enums"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Frank Fralick <frankfralick@gmail.com>"]
 keywords = ["openai", "async-openai", "ai", "clap"]
 description = "A companion crate for async-openai to ease the composition of function calls by leveraging Rust's type system and enums."
@@ -15,8 +15,8 @@ categories = ["api-bindings", "command-line-interface"]
 [dependencies]
 async-openai = "0.18.2"
 async-trait = "0.1.72"
-openai-func-enums-macros = { path = "../openai-func-enums-macros", version = "0.3.0"}
-openai-func-embeddings = { path = "../openai-func-embeddings", version = "0.3.0"}
+openai-func-enums-macros = { path = "../openai-func-enums-macros", version = "0.3.1" }
+openai-func-embeddings = { path = "../openai-func-embeddings", version = "0.3.1" }
 rkyv = { version = "0.7.44", features = ["validation"] }
 serde_json = "1.0.96"
 tokio = { version = "1.25.0", features = ["sync"] }
