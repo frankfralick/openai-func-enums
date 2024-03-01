@@ -13,7 +13,7 @@ proc-macro = true
 
 [dependencies]
 async-openai = "0.18.3"
-openai-func-embeddings = { path = "../openai-func-embeddings"}
+openai-func-embeddings = { path = "../openai-func-embeddings", version = "0.3.0"}
 proc-macro2 = "1.0.78"
 quote = "1.0.35"
 rkyv = { version = "0.7.44", features = ["validation"]}
