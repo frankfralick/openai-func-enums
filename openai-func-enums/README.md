@@ -1,17 +1,21 @@
-
 # openai-func-enums:
 
 openai-func-enums is an unofficial Rust library for OpenAI. It contains a set of procedural macros and other functions, to be used in conjunction with [async-openai](https://github.com/64bit/async-openai), that make it easy to use enums to compose "function" tool types that can be passed to OpenAI's chat completions api.
 
+If you want to see a larger example where there are more function definitions than there is context window, check out [dripgrep](https://github.com/frankfralick/dripgrep).
+
+
 ### Why?
 
-The motivation for this was the need to leverage OpenAI function calls for logic control flow. If you have a lot of "function calls" to deal with, especially if they share argument types, the out-of-the-box way of doing this is unwieldy with async-openai. This library allows returns to be deserialized as instances of structs, the types of which the macros produce, so that you can easily take the response and match on the variants selected by the model.
+The motivation for this was the need to leverage OpenAI function calls for logic control flow. If you have a lot of "function calls" to deal with, especially if they share argument types, the out-of-the-box way of doing this is unwieldy with using just async-openai. This library allows returns to be deserialized as instances of structs, the types of which the macros produce, so that you can easily take the response and match on the variants selected by the model.
 
 ## Features
 
-- **Enums are the greatest:** openai-func-enums asks you to define an enum to represent possible "functions" to be passed to the OpenAI API, with each variant representing a function, with the fields on these variants indicating the required arguments. Each field is an enum, with the variants of these fields determining the allowed choices that can be passed to the OpenAI API.
+- **Enums are the greatest:** openai-func-enums asks you to define an enum to represent possible "functions" to be passed to the OpenAI API, with each variant representing a function, with the fields on these variants indicating the required arguments. Each field can be either an enum, a value type, or a vector of value types, with the variants of the enum fields determining the allowed choices that can be passed to the OpenAI API.
 
-- **Token Tallying:** The library keeps a tally of the token count associated with each "function" defined through the enums. This would allow for precise control over the token limit if there was better documentation, but it should work in most cases. There is a limit on function descriptions that I can but haven't determined a value for. At some point I will put in guards for description length (the function description seems to make a big difference on performance where nuance exists).
+- **Token Tallying:** The library keeps a tally of the token count associated with each "function" defined through the enums.
+
+- **Embedding-Based Function Filtering:** Building your application with the feature `--compile_embeddings_all` will get embeddings for your functions and bake them into a zero-copy archive available at runtime. A per request token budget for tool definitions will be used to limit tools to what is most similar to the prompt. You can also specify functions that must be included no matter their similarity rank. A feature flag for updating changes only is there, but doesn't work yet because it is more involved. It uses [rkyv](https://github.com/rkyv/rkyv)(zero-copy deserialization framework) for serialization/deserialization.
 
 - **clap-gpt:** This library provides macros and traits to allow you to turn an existing clap application into a clap-gpt application without a ton of extra ceremony required. See the usage section for an example.
 
@@ -24,12 +28,17 @@ The motivation for this was the need to leverage OpenAI function calls for logic
 First, define an enum to hold the possible functions, with each variant being a function. The fields on these variants indicate the required arguments, and each field must also be an enum. The variants of these fields determine the allowed choices that can be passed to OpenAI's API. For example, here's a function definition for getting current weather:
 
 ```rust
-#[derive(Debug, FunctionCallResponse)]
+#[derive(Debug, ToolSet)]
 pub enum FunctionDef {
-    #[func_description(
-        description = "Get the current weather in the location closest to the one provided location"
-    )]
-    GetCurrentWeather(Location, TemperatureUnits),
+    /// "Get the current weather in the location closest to the one provided location"
+    GetCurrentWeather {
+        location: Location,
+        temperature_units: TemperatureUnits,
+    },
+
+    GPT {
+        prompt: String,
+    },
 }
 ```
 
@@ -45,67 +54,43 @@ pub enum Location {
 }
 ```
 
-Then, you can use these definitions to construct a request to the OpenAI API. The thing to note here is that the user prompt asks about the weather at the center of the universe, Swainsboro, GA, which doesn't correspond to any valid locations we provided it, and it returns the closest valid option, Atlanta. In this examle the prompt also asks for the weather in two additional locations. Because I'm using a model that supports "parallel tool calls", it detects that it can make these three calls all at once and does so. It is important to understand that if a "tool_choice" parameter is passed in the request, OpenAI will only return a single tool call to the specified function, and it will deal only with whatever was first in the request, as far as I can tell. Another quirk to be mindful of is that defining allowed values for a function definition, with the hope that it will make the best choice if a user prompt doesn't exactly match, doesn't seem to work at all in a parallel context unless the "near match" request comes first. If I rearrange the example below to list Swainsboro last, it returns two parallel tool calls on Nashville and Los Angeles only.
+Then, you can use these definitions to construct a request to the OpenAI API. The thing to note here is that the user prompt asks about the weather at the center of the universe, Swainsboro, GA, which doesn't correspond to any valid locations we provided it, and it returns the closest valid option, Atlanta. 
+
+In this examle the prompt also asks for the weather in two additional locations. Because I'm using a model that supports "parallel tool calls", it detects that it can make these three calls all at once and does so.
 
 ```rust
-let tool_args = get_tool_chat_completion_args(GetCurrentWeatherResponse::get_function_json)?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (sender, receiver) = mpsc::channel(100);
+    let logger = Arc::new(Logger { sender });
+    spawn(logger_task(receiver));
+    let logger_clone = logger.clone();
 
-let request = CreateChatCompletionRequestArgs::default()
-    .max_tokens(512u16)
-    .model("gpt-4-1106-preview")
-    .messages([ChatCompletionRequestUserMessageArgs::default()
-        .content("What's the weather like in Swainsboro, GA, Nashville, TN, Los Angeles, CA?")
-        .build()?
-        .into()])
-    .tools(tool_args.0)
-    // Only one function call will be returned if tool_choice is passed.
-    //.tool_choice(GetCurrentWeatherResponse::to_tool_choice())
-    .build()?;
-```
+    (FunctionDef::GPT {
+        prompt: "What's the weather like in Swainsboro, GA, Nashville, TN, Los Angeles, CA?"
+            .to_string(),
+    })
+    .run(ToolCallExecutionStrategy::Async, None, logger_clone)
+    .await
+    .map_err(|e| {
+        Box::new(CommandError::new(&format!(
+            "Command failed with error: {}",
+            e
+        )))
+    })?;
 
-This creates a request with the `GetCurrentWeather` function, and two arguments: `Location` and `TemperatureUnits`.
-
-After sending the chat request, you can use `parse_function_call!` macro to parse the function call response into an instance of GetCurrentWeatherResponse, which is a struct type that the FunctionCallResponse derive macro generates. The properties of this struct type will correspond to the argument type enums. In this example GetCurrentWeatherResponse will have properties location: Location, and temperature_units: TemperatureUnits. Once you have this you can match on the variants and be on your way:
-
-```rust
-let response_message = client
-    .chat()
-    .create(request)
-    .await?
-    .choices
-    .get(0)
-    .unwrap()
-    .message
-    .clone();
-
-if let Some(tool_calls) = response_message.tool_calls {
-    println!("These are the tool calls returned:");
-    println!("{:#?}", tool_calls);
-    println!("");
-
-    for tool_call in tool_calls.iter() {
-        match tool_call.r#type {
-            ChatCompletionToolType::Function => {
-                let current_weather_response =
-                    parse_function_call!(tool_call.function, GetCurrentWeatherResponse);
-
-                if let Some(current_weather_response) = current_weather_response {
-                    println!(
-                        "Function called with location: {:#?}",
-                        current_weather_response.location
-                    );
-                }
-            }
-        }
-    }
+    Ok(())
 }
 ```
+It is important to note that the call to "run" above is defined by the RunCommand trait and you must implement it, and you need a "GPT" variant that takes a String prompt.
+
+This creates a request with the `GetCurrentWeather` function, and two arguments: `Location` and `TemperatureUnits`.
 
 ### Integration with clap:
 Depending on how your existing clap application is structured, this library can provide an easy mechanism to allow use of your command line tool with natural language instructions. It supports value type arguments and enums. How well it performs will depend on which model you use, the system messages, and function descriptions.
 
 
-If your application follows the pattern where you have an enum that derives clap's ```Subcommand```, you will also want to derive ```SubcommandGPT```. Additionally, you will want to add a new magical variant to handle the natural language commands. In this example it is the "GPT" variant. Note that I don't give it a description, and you do want to omit it. There's another variant in this example that isn't necessary to have, "CallMultiStep", that is there just to demonstrate handling multiple sequential steps at once.
+If your application follows the pattern where you have an enum that derives clap's `Subcommand` then this library can be added with little friction. This example has a variant `CallMultiStep`, that is there just to demonstrate handling multiple sequential or parallel steps at once.
 
 A word of caution: Recursion and AI probably aren't a good combo without guarding against it running away from you. It is entirely possible to make a prompt using the example below that will keep making requests to OpenAI.
 
@@ -119,7 +104,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Debug, Subcommand, SubcommandGPT)]
+#[derive(Debug, Subcommand, ToolSet)]
 pub enum Commands {
     /// Adds two numbers
     Add {
@@ -155,12 +140,17 @@ pub enum Commands {
 }
 ```
 
-The library provides a trait called "RunCommand", which makes you implement a "run" function. This function returns a result of Option<String>, and this is only for cases where you have more than one step.  In this example I'm showing how you can have value type arguments, as well as enums. If you want to define an enum that will serve as an argument to function calls, they need to derive clap's ```ValueEnum```, as well as the other ```EnumDescriptor``` and ```VariantDescriptors``` provided by this library.
+The library provides a trait called "RunCommand", which makes you implement a "run" function. This function returns a result of Option<String>, and this is only for cases where you have more than one step.  In this example I'm showing how you can have value type arguments, as well as enums. If you want to define an enum that will serve as an argument to function calls, they need to derive clap's `ValueEnum`, as well as the other `EnumDescriptor` and `VariantDescriptors` provided by this library.
 
-#### Parallel Tool Calls:
-Currently the "run" function for RunCommand takes a single argument called that is an enum ToolCallExecutionStrategy. This sets how parallel tool calls will get executed if a prompt results in more than one. Running with ```ToolCallExecutionStrategy::Async``` will run each tool call it can concurrently and this is what should be used is most cases. For now at least, selecting "Parallel" will run just the initial parallel calls on their own os threads. Subsequent parallel calls made in the course of a multi-step request will not spawn new os threads and they will run concurrently.
+#### Parallel Tool Calls
+Currently the "run" function for RunCommand takes a single argument called that is an enum ToolCallExecutionStrategy. This sets how parallel tool calls will get executed if a prompt results in more than one. Running with `ToolCallExecutionStrategy::Async` will run each tool call it can concurrently and this is what should be used is most cases. For now at least, selecting "Parallel" will run just the initial parallel calls on their own os threads. Subsequent parallel calls made in the course of a multi-step request will not spawn new os threads and they will run concurrently.
 
-![Clap Example](./assets/clap_example.PNG)
+#### Embeddings
+If you really want to do your part in hastening the end of humanity, you are going to want to build a really featureful system with lots of things that the LLM can do. This will create a problem for you as LLM's mind is like a butterfly. Even if the context window can hold it, give it too much to choose from and it will become more unreliable that it already is.
+
+But even if your set of functions isn't that large, how well it does can be really 
+
+![Clap Example](./openai-func-enums/assets/clap_example.PNG)
 
 
 ```rust
@@ -169,7 +159,12 @@ impl RunCommand for Commands {
     async fn run(
         &self,
         execution_strategy: ToolCallExecutionStrategy,
-    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+        _arguments: Option<Vec<String>>,
+        logger: Arc<Logger>,
+    ) -> Result<
+        (Option<String>, Option<Vec<String>>),
+        Box<dyn std::error::Error + Send + Sync + 'static>,
+    > {
         let max_response_tokens = 1000_u16;
         let request_token_limit = 4191;
         let model_name = "gpt-4-1106-preview";
@@ -190,7 +185,6 @@ impl RunCommand for Commands {
                               two prompts: the first for addition, and the second combining both \
                               multiplication tasks, recognizing their parallel nature.";
 
-        println!();
         match self {
             Commands::Add {
                 a,
@@ -205,7 +199,7 @@ impl RunCommand for Commands {
                     rounding_mode.variant_name_with_token_count().0,
                     result
                 );
-                return Ok(Some(result.to_string()));
+                return Ok((Some(result.to_string()), None));
             }
             Commands::Subtract {
                 a,
@@ -220,7 +214,7 @@ impl RunCommand for Commands {
                     rounding_mode.variant_name_with_token_count().0,
                     result
                 );
-                return Ok(Some(result.to_string()));
+                return Ok((Some(result.to_string()), None));
             }
             Commands::Multiply {
                 a,
@@ -235,7 +229,7 @@ impl RunCommand for Commands {
                     rounding_mode.variant_name_with_token_count().0,
                     result
                 );
-                return Ok(Some(result.to_string()));
+                return Ok((Some(result.to_string()), None));
             }
             Commands::Divide {
                 a,
@@ -251,15 +245,27 @@ impl RunCommand for Commands {
                         rounding_mode.variant_name_with_token_count().0,
                         result
                     );
-                    return Ok(Some(result.to_string()));
+                    return Ok((Some(result.to_string()), None));
                 } else {
                     return Err(Box::new(CommandError::new("Cannot divide by zero")));
                 }
             }
             Commands::CallMultiStep { prompt_list } => {
+                let _ = logger
+                    .sender
+                    .send(String::from("this is the prompt list"))
+                    .await;
+                let message = format!("{:#?}", prompt_list);
+                let _ = logger.sender.send(message).await;
+
                 let prior_result = Arc::new(Mutex::new(None));
+
+                let command_args_list: Vec<String> = Vec::new();
+                let command_args = Arc::new(Mutex::new(Some(command_args_list)));
                 for (i, prompt) in prompt_list.iter().enumerate() {
                     let prior_result_clone = prior_result.clone();
+                    let command_args_clone = command_args.clone();
+                    let logger_clone = logger.clone();
 
                     match i {
                         0 => {
@@ -271,8 +277,12 @@ impl RunCommand for Commands {
                                 Some(system_message.to_string()),
                                 prior_result_clone,
                                 execution_strategy.clone(),
+                                command_args_clone,
+                                None,
+                                None,
+                                logger_clone,
                             )
-                            .await?;
+                            .await?
                         }
 
                         _ => {
@@ -290,18 +300,42 @@ impl RunCommand for Commands {
                                     Some(system_message.to_string()),
                                     prior_result_clone,
                                     execution_strategy.clone(),
+                                    command_args_clone,
+                                    None,
+                                    None,
+                                    logger_clone,
                                 )
-                                .await?;
+                                .await?
                             } else {
                                 *prior_result.lock().await = None;
                             }
                         }
                     }
                 }
-                return Ok(None);
+                let result = String::from("Ok.");
+                return Ok((Some(result), None));
             }
             Commands::GPT { prompt } => {
+                let prompt_embedding = single_embedding(prompt, FUNC_ENUMS_EMBED_MODEL).await?;
+
                 let prior_result = Arc::new(Mutex::new(None));
+                let command_args = Arc::new(Mutex::new(None));
+                let embed_path = Path::new(FUNC_ENUMS_EMBED_PATH);
+                let mut ranked_func_names = vec![];
+                let logger_clone = logger.clone();
+
+                if embed_path.exists() {
+                    let mut file = File::open(embed_path).unwrap();
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes).unwrap();
+
+                    let archived_funcs =
+                        rkyv::check_archived_root::<Vec<FuncEmbedding>>(&bytes).unwrap();
+                    ranked_func_names = rank_functions(archived_funcs, prompt_embedding).await;
+                }
+
+                let required_funcs = vec![String::from("CallMultiStep")];
+
                 CommandsGPT::run(
                     prompt,
                     model_name,
@@ -310,12 +344,16 @@ impl RunCommand for Commands {
                     Some(system_message.to_string()),
                     prior_result,
                     execution_strategy.clone(),
+                    command_args,
+                    Some(ranked_func_names),
+                    Some(required_funcs),
+                    logger_clone,
                 )
                 .await?;
             }
         };
 
-        Ok(None)
+        Ok((None, None))
     }
 }
 
@@ -343,12 +381,17 @@ impl RoundingMode {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (sender, receiver) = mpsc::channel(100);
+    let logger = Arc::new(Logger { sender });
+    spawn(logger_task(receiver));
+    let logger_clone = logger.clone();
+
     let cli = Cli::parse();
 
     let start_time = Instant::now();
 
     cli.command
-        .run(ToolCallExecutionStrategy::Async)
+        .run(ToolCallExecutionStrategy::Async, None, logger_clone)
         .await
         .map_err(|e| {
             Box::new(CommandError::new(&format!(
