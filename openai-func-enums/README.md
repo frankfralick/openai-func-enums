@@ -15,7 +15,7 @@ The motivation for this was the need to leverage OpenAI function calls for logic
 
 - **Token Tallying:** The library keeps a tally of the token count associated with each "function" defined through the enums.
 
-- **Embedding-Based Function Filtering:** Building your application with the feature `--compile_embeddings_all` will get embeddings for your functions and bake them into a zero-copy archive available at runtime. A per request token budget for tool definitions will be used to limit tools to what is most similar to the prompt. You can also specify functions that must be included no matter their similarity rank. A feature flag for updating changes only is there, but doesn't work yet because it is more involved. It uses [rkyv](https://github.com/rkyv/rkyv)(zero-copy deserialization framework) for serialization/deserialization.
+- **Embedding-Based Function Filtering:** Building your application with the feature `--compile_embeddings_all` will get embeddings for your functions and bake them into a zero-copy archive available at runtime. A per request token budget for tool definitions will be used to limit tools to what is most similar to the prompt. You can also specify functions that must be included no matter their similarity rank. A feature flag for updating only what has change is defined, but t is not yet implemented. It uses [rkyv](https://github.com/rkyv/rkyv) (zero-copy deserialization framework) for serialization/deserialization.
 
 - **clap-gpt:** This library provides macros and traits to allow you to turn an existing clap application into a clap-gpt application without a ton of extra ceremony required. See the usage section for an example.
 
@@ -25,6 +25,20 @@ The motivation for this was the need to leverage OpenAI function calls for logic
 
 **Note: This library requires async-openai, which requires that you have your api key in an environment variable called `OPENAI_API_KEY`.
 
+### Environment
+There are several environment variables to set. I recommend using a `build.rs` file to set these The `build.rs` file for example `get-current-weather` shows the minimum you will need. If you want to have embedding-based culling of functions, you need two additional ones that are shown in the `build.rs` file of the `clap-integration` example.
+
+* `FUNC_ENUMS_EMBED_PATH`: A path (including file name) to where you want the embedding data stored.
+* `FUNC_ENUMS_EMBED_MODEL`: The name of the model that should be used for embeddings.
+* `FUNC_ENUMS_MAX_RESPONSE_TOKENS`
+* `FUNC_ENUMS_MAX_REQUEST_TOKENS`
+* `FUNC_ENUMS_MAX_FUNC_TOKENS`
+* `FUNC_ENUMS_SINGLE_ARG_TOKENS`: This currently doesn't do any thing but will
+
+### Feature Flags
+Please inspect the `Cargo.toml` files in the examples. These macros require that you set them up. The `get-current-weather` example does not utilize the embedding-related/function-culling features, and the clap-integration example does.
+
+### Example
 First, define an enum to hold the possible functions, with each variant being a function. The fields on these variants indicate the required arguments, and each field must also be an enum. The variants of these fields determine the allowed choices that can be passed to OpenAI's API. For example, here's a function definition for getting current weather:
 
 ```rust
@@ -42,7 +56,7 @@ pub enum FunctionDef {
 }
 ```
 
-Each argument must derive EnumDescriptor and VariantDescriptor, and must have the attribute macro arg_description. For example, a `Location` argument might look like this:
+Each argument must derive `EnumDescriptor` and `VariantDescriptors`, and must have the attribute macro `arg_description`. For example, a `Location` argument might look like this:
 
 ```rust
 #[derive(Clone, Debug, Deserialize, EnumDescriptor, VariantDescriptors)]
@@ -56,7 +70,7 @@ pub enum Location {
 
 Then, you can use these definitions to construct a request to the OpenAI API. The thing to note here is that the user prompt asks about the weather at the center of the universe, Swainsboro, GA, which doesn't correspond to any valid locations we provided it, and it returns the closest valid option, Atlanta. 
 
-In this examle the prompt also asks for the weather in two additional locations. Because I'm using a model that supports "parallel tool calls", it detects that it can make these three calls all at once and does so.
+In this example the prompt also asks for the weather in two additional locations. Because I'm using a model that supports "parallel tool calls", it detects that it can make these three calls all at once and does so.
 
 ```rust
 #[tokio::main]
@@ -66,11 +80,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn(logger_task(receiver));
     let logger_clone = logger.clone();
 
+    let system_message = Some((String::from("You are an advanced function-calling bot."), 9));
+
+    // The enum that derives TooSet needs to have a GPT variant.
     (FunctionDef::GPT {
         prompt: "What's the weather like in Swainsboro, GA, Nashville, TN, Los Angeles, CA?"
             .to_string(),
     })
-    .run(ToolCallExecutionStrategy::Async, None, logger_clone)
+    .run(
+        ToolCallExecutionStrategy::Async,
+        None,
+        logger_clone,
+        system_message,
+    )
     .await
     .map_err(|e| {
         Box::new(CommandError::new(&format!(
@@ -82,18 +104,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
-It is important to note that the call to "run" above is defined by the RunCommand trait and you must implement it, and you need a "GPT" variant that takes a String prompt.
-
 This creates a request with the `GetCurrentWeather` function, and two arguments: `Location` and `TemperatureUnits`.
+
+It is important to note that the call to `run` above is defined by the RunCommand trait and you must implement it, and you need a `GPT` variant that takes a String prompt. At some point I think I will want a general "exclude_function" attribute macro to let you dictate functions that shouldn't be shown to the model and are really meant to only be user/client invoked. The reasons for this are discussed in the next example.
+
 
 ### Integration with clap:
 Depending on how your existing clap application is structured, this library can provide an easy mechanism to allow use of your command line tool with natural language instructions. It supports value type arguments and enums. How well it performs will depend on which model you use, the system messages, and function descriptions.
 
-
 If your application follows the pattern where you have an enum that derives clap's `Subcommand` then this library can be added with little friction. This example has a variant `CallMultiStep`, that is there just to demonstrate handling multiple sequential or parallel steps at once.
 
-A word of caution: Recursion and AI probably aren't a good combo without guarding against it running away from you. It is entirely possible to make a prompt using the example below that will keep making requests to OpenAI.
-
+A word of caution: The reason for having a special `GPT` variant is to stop the system from getting into a back-and-forth that will not stop.
 
 ```rust
 #[derive(Parser)]
@@ -112,46 +133,52 @@ pub enum Commands {
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// Subtracts two numbers
     Subtract {
         a: f64,
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// Multiplies two numbers
     Multiply {
         a: f64,
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// Divides two numbers
     Divide {
         a: f64,
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// CallMultiStep is designed to efficiently process complex, multi-step user requests. It takes an array of text prompts, each detailing a specific step in a sequential task. This function is crucial for handling requests where the output of one step forms the input of the next. When constructing the prompt list, consider the dependency and order of tasks. Independent tasks within the same step should be consolidated into a single prompt to leverage parallel processing capabilities. This function ensures that multi-step tasks are executed in the correct sequence and that all dependencies are respected, thus faithfully representing and fulfilling the user's request."
     CallMultiStep {
         prompt_list: Vec<String>,
     },
+
     GPT {
         prompt: String,
     },
 }
 ```
 
-The library provides a trait called "RunCommand", which makes you implement a "run" function. This function returns a result of Option<String>, and this is only for cases where you have more than one step.  In this example I'm showing how you can have value type arguments, as well as enums. If you want to define an enum that will serve as an argument to function calls, they need to derive clap's `ValueEnum`, as well as the other `EnumDescriptor` and `VariantDescriptors` provided by this library.
+### Parallel Tool Calls
+The `run` function for `RunCommand` takes an argument of type `ToolCallExecutionStrategy`. This sets how parallel tool calls will get executed if a prompt results in more than one. Running with `ToolCallExecutionStrategy::Async` will run each tool call it can concurrently and this is what should be used is most cases. For now at least, selecting `Parallel` will run just the initial parallel calls on their own os threads. Subsequent parallel calls made in the course of a multi-step request will not spawn new os threads and they will run concurrently. The `Sync` variant will run everything in the order it comes back.
 
-#### Parallel Tool Calls
-Currently the "run" function for RunCommand takes a single argument called that is an enum ToolCallExecutionStrategy. This sets how parallel tool calls will get executed if a prompt results in more than one. Running with `ToolCallExecutionStrategy::Async` will run each tool call it can concurrently and this is what should be used is most cases. For now at least, selecting "Parallel" will run just the initial parallel calls on their own os threads. Subsequent parallel calls made in the course of a multi-step request will not spawn new os threads and they will run concurrently.
 
-#### Embeddings
-If you really want to do your part in hastening the end of humanity, you are going to want to build a really featureful system with lots of things that the LLM can do. This will create a problem for you as LLM's mind is like a butterfly. Even if the context window can hold it, give it too much to choose from and it will become more unreliable that it already is.
+![Clap Example](./assets/clap_example.PNG)
 
-But even if your set of functions isn't that large, how well it does can be really 
+### Embeddings
+If you really want to do your part in hastening the end of humanity, you are going to want to build a really featureful system with lots of things that the LLM can do. This will create a problem for you as LLM's mind is like a butterfly. Even if the context window can hold it, give it too much to choose from and it will become more unreliable than it already is. You will need to set up environment variables as shown in the example `build.rs` files. You will also need to compile like: `cargo build --release --features "compile_embeddings_all"`. Pay careful attention to the setup of the examples `Cargo.toml` files as well, especially with respect to feature flags.
 
-![Clap Example](./openai-func-enums/assets/clap_example.PNG)
+* _NOTE: You are going to be very confused if you run with the `function_filtering` feature enabled, but haven't compiled with the embeddings first. Don't forget the state of the associated vectors as you make changes or add functionality._
 
+#### Required Trait Implementation
+The library provides a trait called `RunCommand` which makes you implement a "run" function. This function returns a result of Option<String>, and this is only for cases where you have more than one step.  In this example I'm showing how you can have value type arguments, as well as enums. If you want to define an enum that will serve as an argument to function calls, they need to derive clap's `ValueEnum`, as well as the other `EnumDescriptor` and `VariantDescriptors` provided by this library.
 
 ```rust
 #[async_trait]
@@ -161,6 +188,7 @@ impl RunCommand for Commands {
         execution_strategy: ToolCallExecutionStrategy,
         _arguments: Option<Vec<String>>,
         logger: Arc<Logger>,
+        system_message: Option<(String, usize)>,
     ) -> Result<
         (Option<String>, Option<Vec<String>>),
         Box<dyn std::error::Error + Send + Sync + 'static>,
@@ -168,22 +196,6 @@ impl RunCommand for Commands {
         let max_response_tokens = 1000_u16;
         let request_token_limit = 4191;
         let model_name = "gpt-4-1106-preview";
-        let system_message = "You are an advanced function-calling bot, adept at handling complex, \
-                              multi-step user requests. Your role is to discern and articulate \
-                              each step of a user's request, especially when it involves sequential \
-                              operations. Use the CallMultiStep function for requests that require \
-                              sequential processing. Each step should be described in a separate \
-                              prompt, with attention to whether the steps are independent or \
-                              interdependent. For interdependent steps, ensure each prompt \
-                              accurately represents the sequence and dependencies of the tasks. \
-                              Remember, a single step may encompass multiple tasks that can be \
-                              executed in parallel. Your goal is to capture the entire scope of the \
-                              user's request, structuring it into an appropriate sequence of function \
-                              calls without omitting any steps. For example, if a user asks to add 8 \
-                              and 2 in the first step, and then requests the result to be multiplied \
-                              by 7 and 5 in separate tasks of the second step, use CallMultiStep with \
-                              two prompts: the first for addition, and the second combining both \
-                              multiplication tasks, recognizing their parallel nature.";
 
         match self {
             Commands::Add {
@@ -262,6 +274,7 @@ impl RunCommand for Commands {
 
                 let command_args_list: Vec<String> = Vec::new();
                 let command_args = Arc::new(Mutex::new(Some(command_args_list)));
+
                 for (i, prompt) in prompt_list.iter().enumerate() {
                     let prior_result_clone = prior_result.clone();
                     let command_args_clone = command_args.clone();
@@ -272,9 +285,9 @@ impl RunCommand for Commands {
                             CommandsGPT::run(
                                 &prompt.to_string(),
                                 model_name,
-                                request_token_limit,
-                                max_response_tokens,
-                                Some(system_message.to_string()),
+                                Some(request_token_limit),
+                                Some(max_response_tokens),
+                                system_message.clone(),
                                 prior_result_clone,
                                 execution_strategy.clone(),
                                 command_args_clone,
@@ -295,9 +308,9 @@ impl RunCommand for Commands {
                                 CommandsGPT::run(
                                     &new_prompt,
                                     model_name,
-                                    request_token_limit,
-                                    max_response_tokens,
-                                    Some(system_message.to_string()),
+                                    Some(request_token_limit),
+                                    Some(max_response_tokens),
+                                    system_message.clone(),
                                     prior_result_clone,
                                     execution_strategy.clone(),
                                     command_args_clone,
@@ -339,9 +352,9 @@ impl RunCommand for Commands {
                 CommandsGPT::run(
                     prompt,
                     model_name,
-                    request_token_limit,
-                    max_response_tokens,
-                    Some(system_message.to_string()),
+                    Some(request_token_limit),
+                    Some(max_response_tokens),
+                    system_message,
                     prior_result,
                     execution_strategy.clone(),
                     command_args,
@@ -385,13 +398,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let logger = Arc::new(Logger { sender });
     spawn(logger_task(receiver));
     let logger_clone = logger.clone();
+    let system_instructions = Some((
+        String::from(
+            "You are an advanced function-calling bot, adept at handling complex, \
+                      multi-step user requests. Your role is to discern and articulate \
+                      each step of a user's request, especially when it involves sequential \
+                      operations. Use the CallMultiStep function for requests that require \
+                      sequential processing. Each step should be described in a separate \
+                      prompt, with attention to whether the steps are independent or \
+                      interdependent. For interdependent steps, ensure each prompt \
+                      accurately represents the sequence and dependencies of the tasks. \
+                      Remember, a single step may encompass multiple tasks that can be \
+                      executed in parallel. Your goal is to capture the entire scope of the \
+                      user's request, structuring it into an appropriate sequence of function \
+                      calls without omitting any steps. For example, if a user asks to add 8 \
+                      and 2 in the first step, and then requests the result to be multiplied \
+                      by 7 and 5 in separate tasks of the second step, use CallMultiStep with \
+                      two prompts: the first for addition, and the second combining both \
+                      multiplication tasks, recognizing their parallel nature.",
+        ),
+        7_usize,
+    ));
 
     let cli = Cli::parse();
 
     let start_time = Instant::now();
 
     cli.command
-        .run(ToolCallExecutionStrategy::Async, None, logger_clone)
+        .run(
+            ToolCallExecutionStrategy::Async,
+            None,
+            logger_clone,
+            system_instructions,
+        )
         .await
         .map_err(|e| {
             Box::new(CommandError::new(&format!(

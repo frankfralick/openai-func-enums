@@ -1,15 +1,13 @@
 [package]
 name = "clap-integration"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-async-openai = "0.18.2"
+async-openai = "0.19.0"
 async-trait = "0.1.72"
 clap = { version = "4.5.1", features = ["derive"] }
-openai-func-enums = { path = "../../../openai-func-enums/openai-func-enums" }
+openai-func-enums = { path = "../../../openai-func-enums/openai-func-enums", features = ["function_filtering"] }
 rkyv = { version = "0.7.44", features = ["validation"] }
 serde = { version = "1.0.160", features = ["derive"] }
 serde_json = "1"
@@ -19,3 +17,4 @@ tokio = { version = "1.25.0", features = ["full"] }
 [features]
 compile_embeddings_all = ["openai-func-enums/compile_embeddings_all"]
 compile_embeddings_update = ["openai-func-enums/compile_embeddings_update"]
+default = ["openai-func-enums/function_filtering"]

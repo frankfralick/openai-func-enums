@@ -21,14 +21,12 @@ pub trait EnumDescriptor {
     ///
     /// A tuple where the first element is a `String` representing the name of the enum,
     /// and the second element is a `usize` representing the count of tokens in the enum's name.
-    fn name_with_token_count() -> (String, usize);
-    fn arg_description_with_token_count() -> (String, usize);
+    fn name_with_token_count() -> &'static (&'static str, usize);
+
+    fn arg_description_with_token_count() -> &'static (&'static str, usize);
 }
 
-pub trait ToolSet {
-    // fn name_with_token_count() -> (String, usize);
-    // fn arg_description_with_token_count() -> (String, usize);
-}
+pub trait ToolSet {}
 
 /// A trait to provide descriptors for the variants of an enumeration.
 /// This includes the names of the variants and the count of tokens in their names.
@@ -39,7 +37,8 @@ pub trait VariantDescriptors {
     ///
     /// A `Vec` of tuples where each tuple's first element is a `String` representing the name of a variant,
     /// and the second element is a `usize` representing the count of tokens in the variant's name.
-    fn variant_names_with_token_counts() -> Vec<(String, usize)>;
+    fn variant_names_with_token_counts(
+    ) -> &'static (&'static [&'static str], &'static [usize], usize, usize);
 
     /// Returns the name of a variant and the count of tokens in its name.
     ///
@@ -47,7 +46,7 @@ pub trait VariantDescriptors {
     ///
     /// A tuple where the first element is a `String` representing the name of the variant,
     /// and the second element is a `usize` representing the count of tokens in the variant's name.
-    fn variant_name_with_token_count(&self) -> (String, usize);
+    fn variant_name_with_token_count(&self) -> (&'static str, usize);
 }
 
 #[derive(Clone, Debug)]
@@ -109,22 +108,11 @@ pub trait RunCommand: Sync + Send {
         execution_strategy: ToolCallExecutionStrategy,
         arguments: Option<Vec<String>>,
         logger: Arc<Logger>,
+        system_message: Option<(String, usize)>,
     ) -> Result<
         (Option<String>, Option<Vec<String>>),
         Box<dyn std::error::Error + Send + Sync + 'static>,
     >;
-}
-
-/// A trait for responses from function calls.
-/// This includes a method to generate a JSON representation of the function.
-pub trait FunctionCallResponse {
-    /// Returns a JSON representation of the function and the count of tokens in the representation.
-    ///
-    /// # Returns
-    ///
-    /// A `Vec` of tuples where each tuple's first element is a `Value` representing a JSON object of the function,
-    /// and the second element is a `usize` representing the count of tokens in the function's JSON representation.
-    fn get_function_json(&self) -> Vec<(Value, usize)>;
 }
 
 /// A macro to parse a function call into a specified type.
@@ -160,7 +148,6 @@ macro_rules! parse_function_call {
 ///   and the second element is a `usize` representing the total count of tokens in the function's JSON representation.
 pub fn get_function_chat_completion_args(
     func: impl Fn() -> (Value, usize),
-    // ) -> Result<(Vec<ChatCompletionFunctions>, usize), OpenAIError> {
 ) -> Result<(Vec<FunctionObject>, usize), OpenAIError> {
     let (func_json, total_tokens) = func();
 
@@ -265,12 +252,35 @@ pub fn get_tool_chat_completion_args(
     Ok((chat_completion_tool_vec, total_tokens))
 }
 
-pub fn get_tools_token_limited(
-    tool_func: impl Fn(Vec<String>, Vec<String>) -> (Value, usize),
-    ranked_func_names: Vec<String>,
-    required_func_names: Vec<String>,
+/// This function will get called if an "allowed_functions" argument is passed to the
+/// run function. If it is passed, then the presense or absence of the function_filtering
+/// feature flag will dictate what happens. If function_filtering is on, then the required
+/// functions (if some) will get included, then your ranked functions will get added until the
+/// token limit is reached. Without function_filtering feature enabled, all functions listed in
+/// allowed_func_names and required_func_names will get sent.
+
+/// Performs selective inclusion of tools based on the provided `allowed_func_names` and the state
+/// of the `function_filtering` feature flag. When `function_filtering` is enabled and `required_func_names`
+/// is specified, required functions are prioritized, followed by ranked functions until a token limit is reached.
+/// Without the `function_filtering` feature, all functions in `allowed_func_names` and `required_func_names`
+/// are included, irrespective of the token limit.
+///
+/// # Arguments
+/// - `tool_func`: A function that takes allowed and required function names, and returns tool JSON and total token count.
+/// - `allowed_func_names`: A list of function names allowed for inclusion.
+/// - `required_func_names`: An optional list of function names required for inclusion.
+///
+/// # Returns
+/// A result containing a vector of `ChatCompletionTool` objects and the total token count, or an `OpenAIError` on failure.
+///
+/// # Errors
+/// Returns an `OpenAIError::InvalidArgument` if there's an issue parsing the tool JSON.
+pub fn get_tools_limited(
+    tool_func: impl Fn(Vec<String>, Option<Vec<String>>) -> (Value, usize),
+    allowed_func_names: Vec<String>,
+    required_func_names: Option<Vec<String>>,
 ) -> Result<(Vec<ChatCompletionTool>, usize), OpenAIError> {
-    let (tool_json, total_tokens) = tool_func(ranked_func_names, required_func_names);
+    let (tool_json, total_tokens) = tool_func(allowed_func_names, required_func_names);
 
     let mut chat_completion_tool_vec = Vec::new();
 

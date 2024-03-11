@@ -1,9 +1,8 @@
 use openai_func_enums::{
-    arg_description, logger_task, CommandError, EnumDescriptor, RunCommand,
+    arg_description, logger_task, CommandError, EnumDescriptor, Logger, RunCommand,
     ToolCallExecutionStrategy, ToolSet, VariantDescriptors,
 };
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::spawn;
 use tokio::sync::Mutex;
 
@@ -14,13 +13,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn(logger_task(receiver));
     let logger_clone = logger.clone();
 
-    let start_time = Instant::now();
+    let system_message = Some((String::from("You are an advanced function-calling bot."), 9));
 
     (FunctionDef::GPT {
         prompt: "What's the weather like in Swainsboro, GA, Nashville, TN, Los Angeles, CA?"
             .to_string(),
     })
-    .run(ToolCallExecutionStrategy::Async, None, logger_clone)
+    .run(
+        ToolCallExecutionStrategy::Async,
+        None,
+        logger_clone,
+        system_message,
+    )
     .await
     .map_err(|e| {
         Box::new(CommandError::new(&format!(
@@ -28,9 +32,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             e
         )))
     })?;
-
-    let duration = start_time.elapsed();
-    println!("Command completed in {:.2} seconds", duration.as_secs_f64());
 
     Ok(())
 }
@@ -55,14 +56,18 @@ impl RunCommand for FunctionDef {
         execution_strategy: ToolCallExecutionStrategy,
         _arguments: Option<Vec<String>>,
         logger: Arc<Logger>,
+        system_message: Option<(String, usize)>,
     ) -> Result<
         (Option<String>, Option<Vec<String>>),
         Box<dyn std::error::Error + Send + Sync + 'static>,
     > {
+        // These two arguments are optional. If None is passed, the
+        // values are taken from environment variables. Look at
+        // the build.rs file for this example.
         let max_response_tokens = 1000_u16;
         let request_token_limit = 4191;
+
         let model_name = "gpt-4-1106-preview";
-        let system_message = "You are an advanced function-calling bot.";
 
         match self {
             FunctionDef::GetCurrentWeather {
@@ -83,9 +88,9 @@ impl RunCommand for FunctionDef {
                 CommandsGPT::run(
                     prompt,
                     model_name,
-                    request_token_limit,
-                    max_response_tokens,
-                    Some(system_message.to_string()),
+                    Some(request_token_limit),
+                    Some(max_response_tokens),
+                    system_message,
                     prior_result,
                     execution_strategy.clone(),
                     command_args,

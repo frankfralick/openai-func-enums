@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 fn main() {
     // This is the path to where embeddings will be stored.
-    let relative_path = PathBuf::from("../embedding/function_embeddings.txt");
+    let relative_path = PathBuf::from("../embedding/function_embeddings.bin");
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let absolute_path = PathBuf::from(manifest_dir).join(relative_path);
 
@@ -14,6 +14,9 @@ fn main() {
         }
     }
 
+    // The two variables FUNC_ENUMS_EMBED_PATH and FUNC_ENUMS_EMBED_MODLE
+    // are required for using the embedding-related functionality. You also
+    // need to enable the "function_filtering" feature.
     println!(
         "cargo:warning=FUNC_ENUMS_EMBED_PATH set to: {}",
         absolute_path.display()
@@ -40,7 +43,7 @@ fn main() {
         max_response_tokens
     );
 
-    let max_request_tokens = 4191_u16;
+    let max_request_tokens = 4191_usize;
     println!(
         "cargo:warning=FUNC_ENUMS_MAX_REQUEST_TOKENS set to: {}",
         max_request_tokens
@@ -60,7 +63,9 @@ fn main() {
         max_func_tokens
     );
 
-    let max_single_arg_tokens = "20";
+    // This currently doesn't do anything but it will soon. If you don't
+    // ever want this to come into play just set it high.
+    let max_single_arg_tokens = 20_u16;
     println!(
         "cargo:warning=FUNC_ENUMS_MAX_SINGLE_ARG_TOKENS set to: {}",
         max_single_arg_tokens

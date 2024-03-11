@@ -17,7 +17,8 @@ use std::io::Write;
 /// The `arg_description` attribute is a procedural macro used to provide additional description for an enum.
 ///
 /// This attribute does not modify the code it annotates but instead attaches metadata in the form of a description.
-/// This can be helpful for better code readability and understanding the purpose of different enums.
+/// This isn't required. It will be passed as a description if present, which can result in better
+/// argument selection.
 ///
 /// # Usage
 ///
@@ -78,10 +79,10 @@ pub fn arg_description(_args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn enum_descriptor_derive(input: TokenStream) -> TokenStream {
     let DeriveInput { ident, attrs, .. } = parse_macro_input!(input as DeriveInput);
 
-    let name_str = format!("{}", ident);
+    let name_str = ident.to_string();
     let name_token_count = calculate_token_count(&name_str);
 
-    let mut description = String::new();
+    let mut description: &'static str = "";
     let mut desc_tokens = 0_usize;
 
     for attr in &attrs {
@@ -93,8 +94,8 @@ pub fn enum_descriptor_derive(input: TokenStream) -> TokenStream {
                     if meta.path.is_ident("description") {
                         let value = meta.value()?;
                         if let Ok(Lit::Str(value)) = value.parse() {
-                            description = value.value();
-                            desc_tokens = calculate_token_count(description.as_str());
+                            description = Box::leak(value.value().into_boxed_str());
+                            desc_tokens = calculate_token_count(description);
                         }
                     }
                     return Ok(());
@@ -111,11 +112,14 @@ pub fn enum_descriptor_derive(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl openai_func_enums::EnumDescriptor for #ident {
-            fn name_with_token_count() -> (String, usize) {
-                (String::from(#name_str), #name_token_count)
+            fn name_with_token_count() -> &'static (&'static str, usize) {
+                static NAME_DATA: (&'static str, usize) = (stringify!(#ident), #name_token_count);
+                &NAME_DATA
             }
-            fn arg_description_with_token_count() -> (String, usize) {
-                (String::from(#description), #desc_tokens)
+
+            fn arg_description_with_token_count() -> &'static (&'static str, usize) {
+                static DESC_DATA: (&'static str, usize) = (#description, #desc_tokens);
+                &DESC_DATA
             }
         }
     };
@@ -188,29 +192,43 @@ pub fn variant_descriptors_derive(input: TokenStream) -> TokenStream {
         panic!("VariantDescriptors can only be used with enums");
     };
 
-    let variant_names_with_token_counts: Vec<_> = variants
-        .iter()
-        .map(|(variant_name, token_count)| {
-            quote! { (stringify!(#variant_name).to_string(), #token_count) }
-        })
-        .collect();
-
     let variant_name_with_token_count: Vec<_> = variants
         .iter()
         .map(|(variant_name, token_count)| {
-            quote! { Self::#variant_name => (stringify!(#variant_name).to_string(), #token_count) }
+            quote! { Self::#variant_name => (stringify!(#variant_name), #token_count) }
         })
         .collect();
 
+    let variant_names: Vec<_> = variants
+        .iter()
+        .map(|(variant_name, _)| quote! { stringify!(#variant_name) })
+        .collect();
+
+    let variant_name_additional_tokens = variant_names.len() * 3;
+
+    let token_counts: Vec<_> = variants
+        .iter()
+        .map(|(_, token_count)| quote! { #token_count })
+        .collect();
+
+    let total_token_count = variants
+        .iter()
+        .map(|(_, token_count)| *token_count)
+        .sum::<usize>();
+
     let expanded = quote! {
         impl VariantDescriptors for #enum_name {
-            fn variant_names_with_token_counts() -> Vec<(String, usize)> {
-                vec![
-                    #(#variant_names_with_token_counts),*
-                ]
+            fn variant_names_with_token_counts() -> &'static (&'static [&'static str], &'static [usize], usize, usize) {
+                static VARIANT_DATA: (&'static [&'static str], &'static [usize], usize, usize) = (
+                    &[#(#variant_names),*],
+                    &[#(#token_counts),*],
+                    #total_token_count,
+                    #variant_name_additional_tokens
+                );
+                &VARIANT_DATA
             }
 
-            fn variant_name_with_token_count(&self) -> (String, usize) {
+            fn variant_name_with_token_count(&self) -> (&'static str, usize) {
                 match self {
                     #(#variant_name_with_token_count,)*
                 }
@@ -286,39 +304,21 @@ pub fn variant_descriptors_derive(input: TokenStream) -> TokenStream {
 /// Note: The enum must implement the `EnumDescriptor` and `VariantDescriptors` traits for the macro to function correctly. The actual token count is computed at compile time using these traits' methods.
 #[proc_macro]
 pub fn generate_enum_info(input: TokenStream) -> TokenStream {
-    // TODO: Do the whole thing at compile time if you know for sure the arg variants are fixed.
-    // TODO: Make a way to indicate arg variants are fixed.
     let enum_ident = parse_macro_input!(input as Ident);
 
     let output = quote! {
         {
-            let mut token_count = 0;
-            // let mut total_tokens = 0;
+            let ARG_DESC_AND_TOKENS: &'static (&'static str, usize) = <#enum_ident as openai_func_enums::EnumDescriptor>::arg_description_with_token_count();
+            let ENUM_NAME_AND_TOKENS: &'static (&'static str, usize) = <#enum_ident as openai_func_enums::EnumDescriptor>::name_with_token_count();
+            let ENUM_VARIANTS_INFO: &'static (&'static [&'static str], &'static [usize], usize, usize) = <#enum_ident as openai_func_enums::VariantDescriptors>::variant_names_with_token_counts();
 
-            let (arg_desc, arg_tokens) = <#enum_ident as openai_func_enums::EnumDescriptor>::arg_description_with_token_count();
-            token_count += 6;
-            token_count += arg_tokens;
+            let token_count = 6 + ARG_DESC_AND_TOKENS.1 + 6 + ENUM_NAME_AND_TOKENS.1 + 7 + 7 + ENUM_VARIANTS_INFO.2 + ENUM_VARIANTS_INFO.3;
 
-            let enum_name = <#enum_ident as openai_func_enums::EnumDescriptor>::name_with_token_count();
-            // arg declaration
-            token_count += 6;
-            token_count += enum_name.1;
-
-            // enum declaration
-            token_count += 7;
-
-            // type declaration
-            token_count += 7;
-
-            let enum_variants = <#enum_ident as openai_func_enums::VariantDescriptors>::variant_names_with_token_counts();
-            // We need to add 3 tokens to the token count of each variant name
-            token_count += enum_variants.iter().map(|(_, token_count_i)| *token_count_i + 3).sum::<usize>();
-
-            let json_enum = serde_json::json!({
-                enum_name.0: {
+            let json_enum: Value = serde_json::json!({
+                ENUM_NAME_AND_TOKENS.0: {
                     "type": "string",
-                    "enum": enum_variants.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
-                    "description": arg_desc,
+                    "enum": ENUM_VARIANTS_INFO.0.iter().map(|name| *name).collect::<Vec<_>>(),
+                    "description": ARG_DESC_AND_TOKENS.0,
                 }
             });
 
@@ -340,49 +340,37 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
         }
     }
 
-    if type_and_name_values.len() == 2 {
-        let name = type_and_name_values[1].clone();
-        let name_tokens = calculate_token_count(name.as_str());
-        let type_name = type_and_name_values[0].clone();
-        let type_name_tokens = calculate_token_count(type_name.as_str());
-        let output = quote! {
-            {
-                let mut total_tokens = 0;
-                total_tokens += #name_tokens;
-                total_tokens += #type_name_tokens;
-                if #type_name == "array" {
-                    let json_enum = serde_json::json!({
-                        #name: {
-                            "type": #type_name,
-                            "items": {
-                                "type": "string",
-                            },
-                        }
-                    });
+    let output = if type_and_name_values.len() == 2 {
+        let name = &type_and_name_values[1];
+        let type_name = &type_and_name_values[0];
 
-                    total_tokens += 22;
+        let name_tokens = calculate_token_count(name);
+        let type_name_tokens = calculate_token_count(type_name);
+        let mut total_tokens = name_tokens + type_name_tokens;
 
-                    (json_enum, total_tokens)
-
-                } else {
-                    let json_enum = serde_json::json!({
-                        #name: {
-                            "type": #type_name,
-                        }
-                    });
-
-                    total_tokens += 11;
-
-                    (json_enum, total_tokens)
-
-                }
-            }
+        let json_string = if type_name == "array" {
+            total_tokens += 22;
+            format!(
+                r#"{{"{}": {{"type": "array", "items": {{"type": "string"}}}}}}"#,
+                name
+            )
+        } else {
+            total_tokens += 11;
+            format!(r#"{{"{}": {{"type": "{}"}}}}"#, name, type_name)
         };
-        return output.into();
-    }
 
-    let gen = quote! {};
-    gen.into()
+        quote! {
+            {
+                static JSON_STR: &str = #json_string;
+                let json_enum: serde_json::Value = serde_json::from_str(JSON_STR).unwrap();
+                (json_enum, #total_tokens)
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    output.into()
 }
 
 /// This procedural macro attribute is used to specify a description for an enum variant.
@@ -407,193 +395,6 @@ pub fn generate_value_arg_info(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn func_description(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
-}
-
-/// This procedural macro derives the `FunctionCallResponse` trait for an enum.
-///
-/// The derive macro expects an enum and it generates a new struct for each variant of the enum.
-/// The generated struct is named by appending "Response" to the variant's name. Each struct has the same fields as the variant.
-/// Also, a `name`, `to_function_call` and `get_function_json` method is implemented for each struct.
-///
-/// In the `get_function_json` method, any description provided through the `func_description` attribute is used.
-///
-/// # Usage
-///
-/// ```rust
-/// #[derive(FunctionCallResponse)]
-/// #[func_description]
-/// enum MyEnum {
-///     Variant1,
-///     Variant2,
-/// }
-/// ```
-///
-/// Note: This macro can only be applied to enums and it requires the `func_description` attribute to be applied to the enum.
-
-#[deprecated(since = "0.3.0", note = "Use ToolSet instead.")]
-#[proc_macro_derive(FunctionCallResponse, attributes(func_description))]
-pub fn derive_function_call_response(input: TokenStream) -> TokenStream {
-    let ast: DeriveInput = syn::parse(input).unwrap();
-
-    let gen = impl_function_call_response(&ast);
-
-    gen.into()
-}
-
-/// This function generates a `FunctionCallResponse` implementation for each variant of an enum.
-///
-/// For each enum variant, it creates a new struct with the same fields as the variant and also
-/// generates `name`, `to_function_call`, and `get_function_json` methods for the struct.
-///
-/// In the `get_function_json` method, it utilizes the description provided through the `func_description` attribute.
-///
-/// This function is used by the `FunctionCallResponse` derive macro.
-fn impl_function_call_response(ast: &DeriveInput) -> proc_macro2::TokenStream {
-    match &ast.data {
-        Data::Enum(enum_data) => {
-            let mut generated_structs = Vec::new();
-            let mut json_generator_functions = Vec::new();
-
-            for variant in &enum_data.variants {
-                let variant_name = &variant.ident;
-                let struct_name = format_ident!("{}Response", variant_name);
-
-                let mut description = String::new();
-                let mut desc_tokens = 0_usize;
-
-                for attr in &variant.attrs {
-                    if attr.path().is_ident("func_description") {
-                        let attribute_parsed = attr.parse_nested_meta(|meta| {
-                            let content = meta.input;
-
-                            if !content.is_empty() {
-                                if meta.path.is_ident("description") {
-                                    let value = meta.value()?;
-                                    if let Ok(Lit::Str(value)) = value.parse() {
-                                        description = value.value();
-                                        desc_tokens = calculate_token_count(description.as_str());
-                                    }
-                                }
-
-                                return Ok(());
-                            }
-                            Err(meta.error("unrecognized attribute"))
-                        });
-                        match attribute_parsed {
-                            Ok(_attribute_parsed) => {}
-                            Err(e) => {
-                                println!("Error parsing attribute:   {:#?}", e);
-                            }
-                        }
-                    }
-                }
-
-                let fields: Vec<_> = variant
-                    .fields
-                    .iter()
-                    .map(|f| {
-                        let field_name =
-                            format_ident!("{}", to_snake_case(&f.ty.to_token_stream().to_string()));
-                        let field_type = &f.ty;
-                        quote! {
-                            pub #field_name: #field_type,
-                        }
-                    })
-                    .collect();
-
-                let field_info: Vec<_> = variant
-                    .fields
-                    .iter()
-                    .map(|f| {
-                        let field_type = &f.ty;
-                        quote! {
-                            openai_func_enums::generate_enum_info!(#field_type)
-                        }
-                    })
-                    .collect();
-
-                json_generator_functions.push(quote! {
-                    impl #struct_name {
-                        pub fn name() -> String {
-                            stringify!(#struct_name).to_string()
-                        }
-
-                        pub fn to_function_call() -> ChatCompletionFunctionCall {
-                            ChatCompletionFunctionCall::Function {
-                                name: stringify!(#struct_name).to_string(),
-                            }
-                        }
-
-                        pub fn to_tool_choice() -> ChatCompletionToolChoiceOption {
-                            ChatCompletionToolChoiceOption::Named(ChatCompletionNamedToolChoice {
-                                r#type: ChatCompletionToolType::Function,
-                                function: FunctionName { name: stringify!(#struct_name).to_string() }
-                            })
-                        }
-
-                        pub fn get_function_json() -> (serde_json::Value, usize) {
-                            let mut parameters = serde_json::Map::new();
-                            let mut total_tokens = 0;
-
-                            for (arg_json, arg_tokens) in vec![#(#field_info),*] {
-                                println!("arg_json, 512:");
-                                println!("{}", serde_json::to_string_pretty(&arg_json).unwrap());
-
-                                total_tokens += arg_tokens;
-                                parameters.insert(
-                                    arg_json.as_object().unwrap().keys().next().unwrap().clone(),
-                                    arg_json
-                                        .as_object()
-                                        .unwrap()
-                                        .values()
-                                        .next()
-                                        .unwrap()
-                                        .clone(),
-                                );
-                            }
-
-                            let function_json = json!({
-                                "name": stringify!(#struct_name),
-                                "description": #description,
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": parameters,
-                                    "required": parameters.keys().collect::<Vec<_>>()
-                                }
-                            });
-
-                            total_tokens += 12;
-                            total_tokens += #desc_tokens;
-
-                            (function_json, total_tokens)
-                        }
-                    }
-                });
-
-                generated_structs.push(quote! {
-                    #[derive(serde::Deserialize, Debug)]
-                    #[serde(rename_all = "PascalCase")]
-                    pub struct #struct_name {
-                        #(#fields)*
-                    }
-                });
-            }
-
-            let gen = quote! {
-                use async_openai::types::{ChatCompletionFunctionCall, ChatCompletionNamedToolChoice, ChatCompletionToolChoiceOption, FunctionName,};
-                use serde_json::{json, Value};
-                use openai_func_enums::generate_enum_info;
-
-                #(#generated_structs)*
-
-                #(#json_generator_functions)*
-
-            };
-
-            gen
-        }
-        _ => panic!("FunctionCallResponse can only be derived for enums"),
-    }
 }
 
 /// The `ToolSet` procedural macro is used to derive a structure
@@ -644,7 +445,8 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
 
     let mut generated_structs = Vec::new();
     let mut json_generator_functions = Vec::new();
-    let mut generated_clap_gpt_enum = Vec::new();
+
+    let mut generated_clap_gpt_enum: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut generated_struct_names = Vec::new();
 
     #[cfg(any(
@@ -652,26 +454,57 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         feature = "compile_embeddings_update"
     ))]
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let embed_path = std::env::var("FUNC_ENUMS_EMBED_PATH").unwrap();
-    let embed_model = std::env::var("FUNC_ENUMS_EMBED_MODEL").unwrap();
 
-    let max_response_tokens_str = std::env::var("FUNC_ENUMS_MAX_RESPONSE_TOKENS").unwrap();
-    let max_response_tokens: u16 = max_response_tokens_str
+    #[cfg(any(
+        feature = "compile_embeddings_all",
+        feature = "compile_embeddings_update",
+        feature = "function_filtering"
+    ))]
+    let embed_path = std::env::var("FUNC_ENUMS_EMBED_PATH")
+        .expect("Functionality for embeddings requires environment variable FUNC_ENUMS_EMBED_PATH to be set.");
+
+    #[cfg(not(any(
+        feature = "compile_embeddings_all",
+        feature = "compile_embeddings_update",
+        feature = "function_filtering"
+    )))]
+    let embed_path = "";
+
+    #[cfg(any(
+        feature = "compile_embeddings_all",
+        feature = "compile_embeddings_update",
+        feature = "function_filtering"
+    ))]
+    let embed_model = std::env::var("FUNC_ENUMS_EMBED_MODEL")
+        .expect("Functionality for embeddings requires environment variable FUNC_ENUMS_EMBED_MODEL to be set.");
+
+    // We can set const values, we can have feature flags, but
+    // the compiler will not allow us to maybe set a const behind
+    // a feature flag.
+    #[cfg(not(any(
+        feature = "compile_embeddings_all",
+        feature = "compile_embeddings_update",
+        feature = "function_filtering"
+    )))]
+    let embed_model = "";
+
+    let max_response_tokens: u16 = std::env::var("FUNC_ENUMS_MAX_RESPONSE_TOKENS")
+        .expect("Environment variable FUNC_ENUMS_MAX_RESPONSE_TOKENS is required. See build.rs files in the examples.")
         .parse()
         .expect("Failed to parse u16 value from FUNC_ENUMS_MAX_RESPONSE_TOKENS");
 
-    let max_request_tokens_str = std::env::var("FUNC_ENUMS_MAX_REQUEST_TOKENS").unwrap();
-    let max_request_tokens: u16 = max_request_tokens_str
+    let max_request_tokens: usize = std::env::var("FUNC_ENUMS_MAX_REQUEST_TOKENS")
+        .expect("Environment variable FUNC_ENUMS_MAX_REQUEST_TOKENS is required. See build.rs files in the examples.")
         .parse()
-        .expect("Failed to parse u16 value from FUNC_ENUMS_MAX_REQUEST_TOKENS");
+        .expect("Failed to parse usize value from FUNC_ENUMS_MAX_REQUEST_TOKENS");
 
-    let max_func_tokens_str = std::env::var("FUNC_ENUMS_MAX_FUNC_TOKENS").unwrap();
-    let max_func_tokens: u16 = max_func_tokens_str
+    let max_func_tokens: u16 =std::env::var("FUNC_ENUMS_MAX_FUNC_TOKENS")
+        .expect("Environment variable FUNC_ENUMS_MAX_FUNC_TOKENS is required. See build.rs files in the examples.")
         .parse()
         .expect("Failed to parse u16 value from FUNC_ENUMS_MAX_FUNC_TOKENS");
 
-    let max_single_arg_tokens_str = std::env::var("FUNC_ENUMS_MAX_SINGLE_ARG_TOKENS").unwrap();
-    let max_single_arg_tokens: u16 = max_single_arg_tokens_str
+    let max_single_arg_tokens: u16 = std::env::var("FUNC_ENUMS_MAX_SINGLE_ARG_TOKENS") 
+        .expect("Environment variable FUNC_ENUMS_MAX_SINGLE_ARG_TOKENS is required. See build.rs files in the examples.")
         .parse()
         .expect("Failed to parse u16 value from FUNC_ENUMS_MAX_SINGLE_ARG_TOKENS");
 
@@ -692,8 +525,15 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         }
     }
 
+    let mut has_gpt_variant = false;
+    // TODO: make this setable:
+    let gpt_variant_name = "GPT";
     for variant in data.variants.iter() {
         let variant_name = &variant.ident;
+        if variant_name.to_string() == gpt_variant_name {
+            has_gpt_variant = true;
+        }
+
         let struct_name = format_ident!("{}", variant_name);
         let struct_name_tokens = calculate_token_count(struct_name.to_string().as_str());
         generated_struct_names.push(struct_name.clone());
@@ -897,6 +737,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     }
                 }
 
+                // Bake this in. Can be much faster.
                 pub fn get_function_json() -> (serde_json::Value, usize) {
                     let mut parameters = serde_json::Map::new();
                     let mut total_tokens = 0;
@@ -904,6 +745,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     for (arg_json, arg_tokens) in vec![#(#field_info),*] {
                         total_tokens += arg_tokens;
                         total_tokens += 3;
+
                         parameters.insert(
                             arg_json.as_object().unwrap().keys().next().unwrap().clone(),
                             arg_json
@@ -943,6 +785,10 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         });
     }
 
+    if !has_gpt_variant {
+        panic!("Enums that derive ToolSet must define a variant called 'GPT'.")
+    }
+
     let all_function_calls = quote! {
         pub fn all_function_jsons() -> (serde_json::Value, usize) {
             let results = vec![#(#generated_struct_names::get_function_json(),)*];
@@ -971,11 +817,37 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
             (combined_json, total_tokens)
         }
 
-        pub fn function_jsons_with_required_under_limit(
-            ranked_func_names: Vec<String>,
-            required_func_names: Vec<String>
+        pub fn function_jsons_allowed_with_required(
+            allowed_func_names: Vec<String>,
+            required_func_names: Option<Vec<String>>
         ) -> (serde_json::Value, usize) {
             let results = vec![#(#generated_struct_names::get_function_json(),)*];
+            let required_func_names = required_func_names.unwrap_or_default();
+
+            // Take the vector of what has to be there just for it to function and add the ranked
+            // functions to it, skipping ranked ones if it is already in the required list.
+            let updated_func_names = required_func_names.iter()
+                .chain(allowed_func_names.iter().filter(|name| !required_func_names.contains(name)))
+                .cloned()
+                .collect::<Vec<String>>();
+
+            let (functions_to_present, total_tokens) = updated_func_names.iter()
+                .filter_map(|name| results.iter().find(|(json, _)| json["name"] == *name))
+                .fold((vec![], 0_usize), |(mut acc, token_count), (json, tokens)| {
+                    acc.push((json.clone(), tokens));
+                    (acc, token_count + tokens)
+                });
+
+            let combined_json = serde_json::Value::Array(functions_to_present.iter().map(|(json, _)| json.clone()).collect());
+            (combined_json, total_tokens)
+        }
+
+        pub fn function_jsons_with_required_under_limit(
+            ranked_func_names: Vec<String>,
+            required_func_names: Option<Vec<String>>
+        ) -> (serde_json::Value, usize) {
+            let results = vec![#(#generated_struct_names::get_function_json(),)*];
+            let required_func_names = required_func_names.unwrap_or_default();
 
             // Take the vector of what has to be there just for it to function and add the ranked
             // functions to it, skipping ranked ones if it is already in the required list.
@@ -1002,15 +874,13 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
         }
     };
 
-    generated_clap_gpt_enum.push(quote! {
-        // I don't recall why we would need to derive Subcommand on this thing but it seems fine
-        // without it.
-        // TODO: Write docs here and over the generated 'run' function so lsp can help.
-        #[derive(Subcommand)]
-        pub enum CommandsGPT {
-            GPT { a: String },
-        }
-    });
+    {
+        generated_clap_gpt_enum.push(quote! {
+            pub enum CommandsGPT {
+                GPT { a: String },
+            }
+        });
+    }
 
     let struct_names: Vec<String> = generated_struct_names
         .iter()
@@ -1026,12 +896,13 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                 Ok(FunctionResponse::#response_name(response)) => {
                     let result = response.execute_command();
                     let command_clone = command.clone();
+                    let custom_system_message_clone = custom_system_message.clone();
                     let logger_clone = logger.clone();
                     let command_lock = command_clone.lock().await;
                     let command_inner_value = command_lock.as_ref().cloned();
                     drop(command_lock);
 
-                    let run_result = result.run(execution_strategy_clone, command_inner_value, logger_clone).await;
+                    let run_result = result.run(execution_strategy_clone, command_inner_value, logger_clone, custom_system_message_clone).await;
                     match run_result {
                         Ok(run_result) => {
                             {
@@ -1042,6 +913,8 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                 let command_clone = command.clone();
                                 let mut command_lock = command_clone.lock().await;
                                 *command_lock = run_result.1;
+
+                                let custom_system_message_clone = custom_system_message.clone();
                             }
                             return Ok(());
                         }
@@ -1063,12 +936,12 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
             quote! {
                 Ok(FunctionResponse::#response_name(response)) => {
                     let result = response.execute_command();
-
-                    let run_result = result.run(execution_strategy_clone, None, logger_clone).await;
+                    let run_result = result.run(execution_strategy_clone, None, logger_clone, custom_system_message_clone).await;
                     match run_result {
                         Ok(run_result) => {
                             {
                                 // Feels like this is a dead lock.
+                                // Update: isn't.
                                 let mut prior_result_lock = prior_result_clone.lock().await;
                                 *prior_result_lock = run_result.0;
 
@@ -1084,6 +957,16 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
             }
         })
         .collect();
+
+    #[cfg(feature = "function_filtering")]
+    let filtering_delegate = quote! {
+        openai_func_enums::get_tools_limited(CommandsGPT::function_jsons_with_required_under_limit, allowed_functions, required_functions)?
+    };
+
+    #[cfg(not(feature = "function_filtering"))]
+    let filtering_delegate = quote! {
+        openai_func_enums::get_tools_limited(CommandsGPT::function_jsons_allowed_with_required, allowed_functions, required_functions)?
+    };
 
     let commands_gpt_impl = quote! {
         #[derive(Clone, Debug, serde::Deserialize)]
@@ -1161,49 +1044,56 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
             pub async fn run(
                 prompt: &String,
                 model_name: &str,
-                request_token_limit: usize,
-                max_response_tokens: u16,
-                custom_system_message: Option<String>,
-                prior_result: Arc<Mutex<Option<String>>>,
+                request_token_limit: Option<usize>,
+                max_response_tokens: Option<u16>,
+                custom_system_message: Option<(String, usize)>,
+                prior_result: std::sync::Arc<tokio::sync::Mutex<Option<String>>>,
                 execution_strategy: ToolCallExecutionStrategy,
-                command: Arc<Mutex<Option<Vec<String>>>>,
+                command: std::sync::Arc<tokio::sync::Mutex<Option<Vec<String>>>>,
                 allowed_functions: Option<Vec<String>>,
                 required_functions: Option<Vec<String>>,
-                logger: Arc<openai_func_enums::Logger>,
+                logger: std::sync::Arc<openai_func_enums::Logger>,
             ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
 
                 let tool_args: (Vec<async_openai::types::ChatCompletionTool>, usize) = if let Some(allowed_functions) = allowed_functions {
-                    let required_funcs = if let Some(required_functions) = required_functions {
-                        required_functions
+                    if !allowed_functions.is_empty() {
+                        #filtering_delegate
                     } else {
-                        vec![]
-                    };
+                        get_tool_chat_completion_args(CommandsGPT::all_function_jsons)?
+                    }
 
-                    get_tools_token_limited(CommandsGPT::function_jsons_with_required_under_limit, allowed_functions, required_funcs)?
                 } else {
                     get_tool_chat_completion_args(CommandsGPT::all_function_jsons)?
                 };
 
+                let custom_system_message_clone = custom_system_message.clone();
+                let (this_system_message, system_message_tokens) = match custom_system_message_clone {
+                    Some((message, tokens)) => {
+                        (message.clone(), tokens)
+                    }
+                    None => (String::from("You are a helpful function calling bot."), 7)
+                };
 
+                let word_count = prompt.split_whitespace().count();
 
-                let mut system_message_tokens = 7;
-                let mut system_message = String::from("You are a helpful function calling bot.");
-                if let Some(custom_system_message) = custom_system_message {
-                    system_message = custom_system_message;
-                    system_message_tokens = Self::calculate_token_count(system_message.as_str());
-                }
+                let request_token_total = tool_args.1 + system_message_tokens + if word_count < 200 {
+                    ((word_count as f64 / 0.75).round() as usize)
+                } else {
+                    Self::calculate_token_count(prompt.as_str())
+                };
 
-                let request_token_total = tool_args.1 + system_message_tokens + Self::calculate_token_count(prompt.as_str());
-                if request_token_total > request_token_limit {
+                if request_token_total > request_token_limit.unwrap_or(FUNC_ENUMS_MAX_REQUEST_TOKENS)  {
                     return Err(Box::new(openai_func_enums::CommandError::new("Request token count is too high")));
                 }
 
+                let this_system_message_clone = this_system_message.clone();
+
                 let request = CreateChatCompletionRequestArgs::default()
-                    .max_tokens(max_response_tokens)
+                    .max_tokens(max_response_tokens.unwrap_or(FUNC_ENUMS_MAX_RESPONSE_TOKENS))
                     .model(model_name)
                     .temperature(0.0)
                     .messages([ChatCompletionRequestMessage::System(ChatCompletionRequestSystemMessageArgs::default()
-                        .content(system_message)
+                        .content(this_system_message_clone)
                         .build()?),
                     ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessageArgs::default()
                         .content(prompt.to_string())
@@ -1223,12 +1113,10 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                     .message
                     .clone();
 
-                // println!("This is the response message:");
-                // println!("{:#?}", response_message);
-
                 if let Some(tool_calls) = response_message.tool_calls {
                     if tool_calls.len() == 1 {
                         let execution_strategy_clone = execution_strategy.clone();
+                        let custom_system_message_clone = custom_system_message.clone();
 
                         match Self::parse_gpt_function_call(&tool_calls.first().unwrap().function) {
                             #(#match_arms,)*
@@ -1242,6 +1130,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                             ToolCallExecutionStrategy::Async => {
                                 let mut tasks = Vec::new();
 
+                                let custom_system_message_clone = custom_system_message.clone();
                                 for tool_call in tool_calls.iter() {
                                     match tool_call.r#type {
                                         ChatCompletionToolType::Function => {
@@ -1250,6 +1139,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                             let command_clone = command.clone();
                                             let execution_strategy_clone = execution_strategy.clone();
                                             let logger_clone = logger.clone();
+                                            let custom_system_message_clone = custom_system_message.clone();
 
                                             let task = tokio::spawn( async move {
                                                 match Self::parse_gpt_function_call(&function) {
@@ -1276,6 +1166,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                             let command_clone = command.clone();
                                             let execution_strategy_clone = execution_strategy.clone();
                                             let logger_clone = logger.clone();
+                                            let custom_system_message_clone = custom_system_message.clone();
 
                                             match Self::parse_gpt_function_call(&tool_call.function) {
                                                 #(#match_arms_no_return,)*
@@ -1309,6 +1200,7 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
                                             // This will rarely matter.
                                             let execution_strategy_clone = ToolCallExecutionStrategy::Async;
                                             let logger_clone = logger.clone();
+                                            let custom_system_message_clone = custom_system_message.clone();
 
                                             let handle = std::thread::spawn(move || {
                                                 let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1345,29 +1237,28 @@ pub fn derive_subcommand_gpt(input: TokenStream) -> TokenStream {
 
         #[cfg(any(
             feature = "compile_embeddings_all",
-            feature = "compile_embeddings_update"
+            feature = "compile_embeddings_update",
+            feature = "function_filtering"
         ))]
         use openai_func_enums::FuncEnumsError;
+
+        pub const FUNC_ENUMS_EMBED_PATH: &str = #embed_path;
+
+        pub const FUNC_ENUMS_EMBED_MODEL: &str = #embed_model;
     };
 
     let gen = quote! {
-        pub const FUNC_ENUMS_EMBED_PATH: &str = #embed_path;
-        pub const FUNC_ENUMS_EMBED_MODEL: &str = #embed_model;
         pub const FUNC_ENUMS_MAX_RESPONSE_TOKENS: u16 = #max_response_tokens;
-        pub const FUNC_ENUMS_MAX_REQUEST_TOKENS: u16 = #max_request_tokens;
+        pub const FUNC_ENUMS_MAX_REQUEST_TOKENS: usize = #max_request_tokens;
         pub const FUNC_ENUMS_MAX_FUNC_TOKENS: u16 = #max_func_tokens;
         pub const FUNC_ENUMS_MAX_SINGLE_ARG_TOKENS: u16 = #max_single_arg_tokens;
 
         use serde::Deserialize;
         use serde_json::{json, Value};
-        // use openai_func_enums::{
-        //     generate_enum_info, generate_value_arg_info, get_tool_chat_completion_args,
-        //     get_tools_token_limited, ArchivedFuncEmbedding, Logger,
-        // };
 
         use openai_func_enums::{
             generate_value_arg_info, get_tool_chat_completion_args,
-            get_tools_token_limited, ArchivedFuncEmbedding,
+            ArchivedFuncEmbedding,
         };
 
         use rkyv::{archived_root, Archived};

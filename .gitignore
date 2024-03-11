@@ -1,12 +1,14 @@
 /tls
 /target
+
 /vector_storage
+/embedding
+
 /Cargo.lock
 *.env
-*.vscode
-# *.git
 *.json
+*.py
+*.svg
 
 # Readme staging/notes etc. I don't want to include
 README_NOTES.md
-

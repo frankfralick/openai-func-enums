@@ -1,6 +1,18 @@
 [workspace]
 resolver = "2"
+
 members = [
+    "openai-func-enums",
+    "openai-func-enums-macros",
+    "openai-func-embeddings"
+]
+
+exclude = [
+    "examples/get-current-weather",
+    "examples/clap-integration"
+]
+
+default-members = [
     "openai-func-enums",
     "openai-func-enums-macros",
     "openai-func-embeddings"

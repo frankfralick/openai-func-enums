@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use openai_func_enums::{
     logger_task, rank_functions, single_embedding, CommandError, EnumDescriptor, FuncEmbedding,
-    RunCommand, ToolCallExecutionStrategy, ToolSet, VariantDescriptors,
+    Logger, RunCommand, ToolCallExecutionStrategy, ToolSet, VariantDescriptors,
 };
 use std::io::Read;
 use std::sync::Arc;
@@ -26,28 +26,33 @@ pub enum Commands {
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// Subtracts two numbers
     Subtract {
         a: f64,
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// Multiplies two numbers
     Multiply {
         a: f64,
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// Divides two numbers
     Divide {
         a: f64,
         b: f64,
         rounding_mode: RoundingMode,
     },
+
     /// CallMultiStep is designed to efficiently process complex, multi-step user requests. It takes an array of text prompts, each detailing a specific step in a sequential task. This function is crucial for handling requests where the output of one step forms the input of the next. When constructing the prompt list, consider the dependency and order of tasks. Independent tasks within the same step should be consolidated into a single prompt to leverage parallel processing capabilities. This function ensures that multi-step tasks are executed in the correct sequence and that all dependencies are respected, thus faithfully representing and fulfilling the user's request."
     CallMultiStep {
         prompt_list: Vec<String>,
     },
+
     GPT {
         prompt: String,
     },
@@ -60,6 +65,7 @@ impl RunCommand for Commands {
         execution_strategy: ToolCallExecutionStrategy,
         _arguments: Option<Vec<String>>,
         logger: Arc<Logger>,
+        system_message: Option<(String, usize)>,
     ) -> Result<
         (Option<String>, Option<Vec<String>>),
         Box<dyn std::error::Error + Send + Sync + 'static>,
@@ -67,22 +73,6 @@ impl RunCommand for Commands {
         let max_response_tokens = 1000_u16;
         let request_token_limit = 4191;
         let model_name = "gpt-4-1106-preview";
-        let system_message = "You are an advanced function-calling bot, adept at handling complex, \
-                              multi-step user requests. Your role is to discern and articulate \
-                              each step of a user's request, especially when it involves sequential \
-                              operations. Use the CallMultiStep function for requests that require \
-                              sequential processing. Each step should be described in a separate \
-                              prompt, with attention to whether the steps are independent or \
-                              interdependent. For interdependent steps, ensure each prompt \
-                              accurately represents the sequence and dependencies of the tasks. \
-                              Remember, a single step may encompass multiple tasks that can be \
-                              executed in parallel. Your goal is to capture the entire scope of the \
-                              user's request, structuring it into an appropriate sequence of function \
-                              calls without omitting any steps. For example, if a user asks to add 8 \
-                              and 2 in the first step, and then requests the result to be multiplied \
-                              by 7 and 5 in separate tasks of the second step, use CallMultiStep with \
-                              two prompts: the first for addition, and the second combining both \
-                              multiplication tasks, recognizing their parallel nature.";
 
         match self {
             Commands::Add {
@@ -161,24 +151,42 @@ impl RunCommand for Commands {
 
                 let command_args_list: Vec<String> = Vec::new();
                 let command_args = Arc::new(Mutex::new(Some(command_args_list)));
+                let embed_path = Path::new(FUNC_ENUMS_EMBED_PATH);
+
                 for (i, prompt) in prompt_list.iter().enumerate() {
+                    let prompt_embedding = single_embedding(prompt, FUNC_ENUMS_EMBED_MODEL).await?;
                     let prior_result_clone = prior_result.clone();
                     let command_args_clone = command_args.clone();
                     let logger_clone = logger.clone();
+
+                    // If you are attempting to do something that branches more than once you will
+                    // want to force the inclusion of this variant. It is unlikely to rank high.
+                    let required_funcs = vec![String::from("CallMultiStep")];
+
+                    let mut ranked_func_names = vec![];
+                    if embed_path.exists() {
+                        let mut file = File::open(embed_path).unwrap();
+                        let mut bytes = Vec::new();
+                        file.read_to_end(&mut bytes).unwrap();
+
+                        let archived_funcs =
+                            rkyv::check_archived_root::<Vec<FuncEmbedding>>(&bytes).unwrap();
+                        ranked_func_names = rank_functions(archived_funcs, prompt_embedding).await;
+                    }
 
                     match i {
                         0 => {
                             CommandsGPT::run(
                                 &prompt.to_string(),
                                 model_name,
-                                request_token_limit,
-                                max_response_tokens,
-                                Some(system_message.to_string()),
+                                Some(request_token_limit),
+                                Some(max_response_tokens),
+                                system_message.clone(),
                                 prior_result_clone,
                                 execution_strategy.clone(),
                                 command_args_clone,
-                                None,
-                                None,
+                                Some(ranked_func_names),
+                                Some(required_funcs),
                                 logger_clone,
                             )
                             .await?
@@ -194,9 +202,9 @@ impl RunCommand for Commands {
                                 CommandsGPT::run(
                                     &new_prompt,
                                     model_name,
-                                    request_token_limit,
-                                    max_response_tokens,
-                                    Some(system_message.to_string()),
+                                    Some(request_token_limit),
+                                    Some(max_response_tokens),
+                                    system_message.clone(),
                                     prior_result_clone,
                                     execution_strategy.clone(),
                                     command_args_clone,
@@ -238,9 +246,9 @@ impl RunCommand for Commands {
                 CommandsGPT::run(
                     prompt,
                     model_name,
-                    request_token_limit,
-                    max_response_tokens,
-                    Some(system_message.to_string()),
+                    Some(request_token_limit),
+                    Some(max_response_tokens),
+                    system_message,
                     prior_result,
                     execution_strategy.clone(),
                     command_args,
@@ -284,13 +292,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let logger = Arc::new(Logger { sender });
     spawn(logger_task(receiver));
     let logger_clone = logger.clone();
+    let system_instructions = Some((
+        String::from(
+            "You are an advanced function-calling bot, adept at handling complex, \
+                      multi-step user requests. Your role is to discern and articulate \
+                      each step of a user's request, especially when it involves sequential \
+                      operations. Use the CallMultiStep function for requests that require \
+                      sequential processing. Each step should be described in a separate \
+                      prompt, with attention to whether the steps are independent or \
+                      interdependent. For interdependent steps, ensure each prompt \
+                      accurately represents the sequence and dependencies of the tasks. \
+                      Remember, a single step may encompass multiple tasks that can be \
+                      executed in parallel. Your goal is to capture the entire scope of the \
+                      user's request, structuring it into an appropriate sequence of function \
+                      calls without omitting any steps. For example, if a user asks to add 8 \
+                      and 2 in the first step, and then requests the result to be multiplied \
+                      by 7 and 5 in separate tasks of the second step, use CallMultiStep with \
+                      two prompts: the first for addition, and the second combining both \
+                      multiplication tasks, recognizing their parallel nature.",
+        ),
+        207_usize,
+    ));
 
     let cli = Cli::parse();
 
     let start_time = Instant::now();
 
     cli.command
-        .run(ToolCallExecutionStrategy::Async, None, logger_clone)
+        .run(
+            ToolCallExecutionStrategy::Async,
+            None,
+            logger_clone,
+            system_instructions,
+        )
         .await
         .map_err(|e| {
             Box::new(CommandError::new(&format!(
